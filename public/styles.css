@@ -221,8 +221,12 @@
   .mini-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-ring)}
   .numcell{display:flex;align-items:center;justify-content:center;gap:6px;width:100%}
   .numcell .unit{width:26px;flex:none;text-align:left;color:var(--ink-faint);font-size:12px}
-  .hint{cursor:help;display:inline-grid;place-items:center;width:15px;height:15px;border:1px solid var(--line-strong);border-radius:50%;font-size:10px;font-weight:700;font-style:italic;color:var(--ink-faint);vertical-align:middle;margin-left:4px;line-height:1}
-  .hint:hover,.hint:focus{color:var(--accent);border-color:var(--accent);outline:none}
+  .tip-badge{cursor:help;display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:700;font-family:Georgia,"Times New Roman",serif;font-style:italic;vertical-align:middle;margin-left:5px;line-height:1;transition:background .12s,color .12s}
+  .tip-badge:hover,.tip-badge:focus{background:var(--accent);color:var(--on-accent);outline:none}
+  #tooltip{position:fixed;z-index:500;max-width:270px;background:var(--ink);color:var(--bg);padding:9px 12px;border-radius:10px;font-size:12.5px;line-height:1.5;box-shadow:var(--shadow-lg);pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .13s ease,transform .13s ease}
+  #tooltip.on{opacity:1;transform:none}
+  #tooltip::after{content:"";position:absolute;top:100%;left:var(--ax,50%);transform:translateX(-50%);border:6px solid transparent;border-top-color:var(--ink)}
+  #tooltip.below::after{top:auto;bottom:100%;border-top-color:transparent;border-bottom-color:var(--ink)}
   select.mini{padding:6px 8px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface-2);color:var(--ink);font-family:inherit;font-size:13px}
   .btn-ghost{background:var(--surface-2);border:1px solid var(--line-strong);color:var(--ink);border-radius:9px;padding:7px 12px;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
   .btn-ghost:hover{border-color:var(--accent);color:var(--accent)}

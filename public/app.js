@@ -222,13 +222,13 @@ function viewManage(){
 function manageSupplies(){
   const rows=DB.ingredients.map(x=>{const s=statusOf(ratio(x));
     return `<tr data-ing="${x.id}"><td><b>${esc(x.name)}</b><div style="font-size:11.5px;color:var(--ink-faint)">${esc(x.cat)} · measured in ${x.unit}</div></td>
-      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}" title="How much one packet/bag holds, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
-      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}" title="How many cups one packet makes"><span class="unit"></span></div></td>
-      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}" title="Current quantity on hand, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
-      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}" title="Full / ideal stock level, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}" data-tip="How much one packet/bag holds, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}" data-tip="How many cups one packet makes"><span class="unit"></span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}" data-tip="Current quantity on hand, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}" data-tip="Full / ideal stock level, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
       <td class="r"><span class="pill ${s}" style="font-size:10.5px">${statusLabel(s)}</span><div style="font-size:10.5px;color:var(--ink-faint);margin-top:3px">${coffeesLeft(x)} cups</div></td>
-      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap"><button class="btn-ghost btn-mini" data-updrow="${x.id}" title="Save this row's changes">${I.check}Update</button><button class="btn-ghost btn-mini" data-restock="${x.id}" title="Add one full packet (${x.packet}${x.unit}) to stock">${I.plus}Packet</button><button class="btn-ghost btn-mini" data-delsupply="${x.id}" title="Delete this supply" style="padding:6px 8px">${I.trash}</button></div></td></tr>`;}).join('');
-  const H=(label,tip)=>`<th style="text-align:center">${label} <span class="hint" title="${tip}" tabindex="0" aria-label="${tip}">i</span></th>`;
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap"><button class="btn-ghost btn-mini" data-updrow="${x.id}" data-tip="Save this row's changes">${I.check}Update</button><button class="btn-ghost btn-mini" data-restock="${x.id}" data-tip="Add one full packet (${x.packet}${x.unit}) to stock">${I.plus}Packet</button><button class="btn-ghost btn-mini" data-delsupply="${x.id}" data-tip="Delete this supply" style="padding:6px 8px">${I.trash}</button></div></td></tr>`;}).join('');
+  const H=(label,tip)=>`<th style="text-align:center">${label} <span class="tip-badge" data-tip="${tip}" tabindex="0" aria-label="${tip}">i</span></th>`;
   return `<div class="card"><div class="tbl-wrap"><table>
       <thead><tr><th>Supply</th>
         ${H('Packet size',"How much one packet or bag holds, in the item&#39;s unit (g, ml or pcs). Example: a 1000 g bag of beans.")}
@@ -614,4 +614,29 @@ async function signOut(){await sb.auth.signOut();me=null;document.getElementById
   document.getElementById('logoutBtn').onclick=signOut;document.getElementById('logoutBtn2').onclick=signOut;
   document.addEventListener('keydown',e=>{if(e.key==='Escape'){const r=document.getElementById('modalRoot');if(r.innerHTML)r.innerHTML='';}});
   sb.auth.getSession().then(({data})=>{if(data&&data.session)afterLogin();});
+})();
+
+/* ============================ TOOLTIPS ============================ */
+(function initTooltips(){
+  let tip=null;
+  function hide(){ if(tip){tip.remove();tip=null;} }
+  function show(target){
+    const text=target.getAttribute('data-tip'); if(!text)return;
+    hide();
+    tip=document.createElement('div'); tip.id='tooltip'; tip.textContent=text; document.body.appendChild(tip);
+    const r=target.getBoundingClientRect(); const t=tip.getBoundingClientRect();
+    let left=r.left+r.width/2-t.width/2;
+    left=Math.max(8, Math.min(left, window.innerWidth-t.width-8));
+    let top=r.top-t.height-10, below=false;
+    if(top<8){top=r.bottom+10; below=true; tip.classList.add('below');}
+    tip.style.left=left+'px'; tip.style.top=top+'px';
+    tip.style.setProperty('--ax',(r.left+r.width/2-left)+'px');
+    requestAnimationFrame(()=>tip&&tip.classList.add('on'));
+  }
+  document.addEventListener('mouseover',e=>{const t=e.target.closest&&e.target.closest('[data-tip]');if(t)show(t);});
+  document.addEventListener('mouseout',e=>{const t=e.target.closest&&e.target.closest('[data-tip]');if(t)hide();});
+  document.addEventListener('focusin',e=>{const t=e.target.closest&&e.target.closest('[data-tip]');if(t)show(t);});
+  document.addEventListener('focusout',hide);
+  window.addEventListener('scroll',hide,true);
+  window.addEventListener('resize',hide);
 })();
