@@ -1,0 +1,85 @@
+<title>GM Wellness Ops</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+
+<!-- ================= LOGIN ================= -->
+<div class="login-wrap" id="login">
+  <div class="login-card">
+    <button class="icon-btn login-theme" id="loginTheme" title="Toggle theme" aria-label="Toggle dark mode"></button>
+    <div class="brand-row">
+      <span class="logo-badge" aria-hidden="true" id="loginLogo"></span>
+      <div>
+        <div class="wordmark">GM Wellness</div>
+        <div class="tagline">Coffee &amp; wellness bar</div>
+      </div>
+    </div>
+    <h1>Sign in</h1>
+    <p class="login-sub">Manage your bar, stock and sales in one place.</p>
+
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" placeholder="you@yourshop.com">
+    </div>
+    <div class="field">
+      <label for="pass">Password</label>
+      <div class="pw-wrap">
+        <input id="pass" type="password" autocomplete="current-password" placeholder="Your password">
+        <button type="button" id="pwToggle" aria-label="Show password"></button>
+      </div>
+    </div>
+    <div class="login-err" id="loginErr" role="alert"></div>
+    <button class="btn btn-primary btn-block" id="signin">Sign in</button>
+    <p class="login-note">Trouble signing in? Ask an owner to reset your password from Admin &rarr; Team.</p>
+  </div>
+</div>
+
+<!-- ================= APP ================= -->
+<div class="app" id="app">
+  <aside class="sidebar" aria-label="Primary">
+    <div class="sb-brand">
+      <span class="logo-badge" aria-hidden="true" id="sbLogo"></span>
+      <div class="wordmark">GM Wellness</div>
+    </div>
+    <nav id="nav" aria-label="Sections"></nav>
+    <div class="nav-spacer"></div>
+    <div class="sb-user">
+      <span class="avatar" id="sbAvatar">A</span>
+      <div style="flex:1;min-width:0">
+        <div class="who" id="sbWho">Owner</div>
+        <div class="role" id="sbRole">Admin</div>
+      </div>
+      <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle dark mode"></button>
+      <button class="icon-btn" id="logoutBtn" title="Sign out" aria-label="Sign out">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M15 12H4m0 0 4-4m-4 4 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 5V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="tb-brand">
+        <span class="logo-badge" aria-hidden="true" id="tbLogo"></span>
+        <div class="wordmark">GM Wellness</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="avatar" id="tbAvatar" style="width:30px;height:30px;font-size:13px">A</span>
+        <button class="icon-btn" id="themeBtn2" title="Toggle theme" aria-label="Toggle dark mode"></button>
+        <button class="icon-btn" id="logoutBtn2" title="Sign out" aria-label="Sign out">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M15 12H4m0 0 4-4m-4 4 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 5V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </header>
+    <main class="content" id="view" tabindex="-1"></main>
+  </div>
+
+  <nav class="botnav" id="botnav" aria-label="Sections"></nav>
+</div>
+
+<div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+<div id="modalRoot"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
