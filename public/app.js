@@ -222,17 +222,17 @@ function viewManage(){
 function manageSupplies(){
   const rows=DB.ingredients.map(x=>{const s=statusOf(ratio(x));
     return `<tr data-ing="${x.id}"><td><b>${esc(x.name)}</b><div style="font-size:11.5px;color:var(--ink-faint)">${esc(x.cat)}</div></td>
-      <td class="r"><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}"> <span style="color:var(--ink-faint);font-size:12px">${x.unit}</span></td>
-      <td class="r"><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}"></td>
-      <td class="r"><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}"></td>
-      <td class="r"><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}"></td>
+      <td class="r"><div class="numcell"><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}"><span class="unit">${x.unit}</span></div></td>
+      <td class="r"><div class="numcell"><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}"><span class="unit"></span></div></td>
+      <td class="r"><div class="numcell"><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}"><span class="unit">${x.unit}</span></div></td>
+      <td class="r"><div class="numcell"><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}"><span class="unit">${x.unit}</span></div></td>
       <td class="r"><span class="pill ${s}" style="font-size:10.5px">${statusLabel(s)}</span></td>
-      <td class="r"><button class="btn-ghost btn-mini" data-restock="${x.id}">${I.plus}Packet</button></td></tr>`;}).join('');
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-restock="${x.id}">${I.plus}Packet</button><button class="btn-ghost btn-mini" data-delsupply="${x.id}" title="Delete supply" style="padding:6px 8px">${I.trash}</button></div></td></tr>`;}).join('');
   return `<div class="card"><div class="tbl-wrap"><table>
-      <thead><tr><th>Supply</th><th class="r">Packet size</th><th class="r">Coffees / packet</th><th class="r">In stock</th><th class="r">Target (par)</th><th class="r">Status</th><th class="r">Restock</th></tr></thead>
+      <thead><tr><th>Supply</th><th class="r">Packet size</th><th class="r">Coffees / packet</th><th class="r">In stock</th><th class="r">Target (par)</th><th class="r">Status</th><th class="r">Actions</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>
     <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn-ghost" id="addSupply">${I.plus} Add supply</button>
-      <span class="help" style="margin:auto 0">Edit any number and it saves as you type. "Coffees / packet" drives how stock converts to cups.</span></div>`;
+      <span class="help" style="margin:auto 0">Edit a number then click away to save · "+ Packet" adds one packet to stock · trash removes a supply (if it isn't used in a recipe).</span></div>`;
 }
 function manageCoffees(){
   const rows=DB.products.map(p=>{const {cups,limitId}=cupCapacity(p);const lim=ing(limitId);
@@ -316,11 +316,15 @@ function wire(){
     form.onsubmit=e=>{e.preventDefault();const a=parseFloat(amt.value);if(!a||a<=0){amt.focus();return;}logIssue(sel.value,a,mode,document.getElementById('ii-reason').value.trim()||'No reason given');};}
 
   document.querySelectorAll('[data-mtab]').forEach(b=>b.onclick=()=>{manageTab=b.dataset.mtab;render();});
-  document.querySelectorAll('tr[data-ing] .mini-input').forEach(inp=>inp.onchange=async()=>{const id=inp.closest('tr').dataset.ing;const x=ing(id);const v=parseFloat(inp.value);if(isNaN(v))return;const col={packet:'packet_size',perPacket:'coffees_per_packet',stock:'stock',par:'par'}[inp.dataset.f];x[inp.dataset.f]=v;const {error}=await sb.from('ingredients').update({[col]:v}).eq('id',id);if(error)toast('Save failed',I.issues);});
-  document.querySelectorAll('[data-restock]').forEach(b=>b.onclick=async()=>{const x=ing(b.dataset.restock);const {error}=await sb.from('ingredients').update({stock:x.stock+x.packet}).eq('id',x.id);if(error){toast('Restock failed',I.issues);return;}await loadAll();render();toast(`+1 packet of ${x.name}`,I.plus);});
+  document.querySelectorAll('tr[data-ing] .mini-input').forEach(inp=>inp.onchange=async()=>{const id=inp.closest('tr').dataset.ing;const x=ing(id);const v=parseFloat(inp.value);if(isNaN(v)||v<0){inp.value=Math.round(x[inp.dataset.f]);return;}const col={packet:'packet_size',perPacket:'coffees_per_packet',stock:'stock',par:'par'}[inp.dataset.f];const {data,error}=await sb.from('ingredients').update({[col]:v}).eq('id',id).select('id');if(error){toast('Save failed: '+error.message,I.issues);return;}if(!data||!data.length){toast('Not saved — you may not have admin rights',I.issues);return;}x[inp.dataset.f]=v;});
+  document.querySelectorAll('[data-restock]').forEach(b=>b.onclick=async()=>{const x=ing(b.dataset.restock);b.disabled=true;const {data,error}=await sb.from('ingredients').update({stock:Number(x.stock)+Number(x.packet)}).eq('id',x.id).select('id,stock');b.disabled=false;if(error){toast('Restock failed: '+error.message,I.issues);return;}if(!data||!data.length){toast('Not saved — you may not have admin rights',I.issues);return;}await loadAll();render();toast(`+1 packet of ${x.name} (now ${fmtNum(Math.round(data[0].stock))}${x.unit})`,I.plus);});
   const addS=document.getElementById('addSupply');if(addS)addS.onclick=addSupplyModal;
+  document.querySelectorAll('[data-delsupply]').forEach(b=>b.onclick=()=>{const x=ing(b.dataset.delsupply);if(!x)return;
+    const used=DB.products.filter(p=>p.recipe.some(r=>r[0]===x.id)).map(p=>p.name);
+    if(used.length){toast(`In use by ${used.length} coffee(s): ${used.slice(0,3).join(', ')}${used.length>3?'…':''}. Remove it from those recipes first.`,I.issues);return;}
+    confirmModal('Remove supply?',`"${esc(x.name)}" will be permanently deleted.`,'Remove',async()=>{const {error}=await sb.from('ingredients').delete().eq('id',x.id);if(error){toast('Could not delete — it may be used in a recipe',I.issues);return;}await loadAll();render();toast('Supply removed',I.trash);},true);});
 
-  document.querySelectorAll('tr[data-prod] [data-pf]').forEach(inp=>inp.onchange=async()=>{const id=inp.closest('tr').dataset.prod;const p=DB.products.find(x=>x.id===id);const v=parseFloat(inp.value);if(isNaN(v))return;p[inp.dataset.pf]=v;const {error}=await sb.from('products').update({price:v}).eq('id',id);if(error)toast('Save failed',I.issues);});
+  document.querySelectorAll('tr[data-prod] [data-pf]').forEach(inp=>inp.onchange=async()=>{const id=inp.closest('tr').dataset.prod;const p=DB.products.find(x=>x.id===id);const v=parseFloat(inp.value);if(isNaN(v)||v<0){inp.value=p.price;return;}const {data,error}=await sb.from('products').update({price:v}).eq('id',id).select('id');if(error){toast('Save failed: '+error.message,I.issues);return;}if(!data||!data.length){toast('Not saved — you may not have admin rights',I.issues);return;}p.price=v;});
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editRecipe(b.dataset.edit));
   document.querySelectorAll('[data-delp]').forEach(b=>b.onclick=()=>{const p=DB.products.find(x=>x.id===b.dataset.delp);
     confirmModal('Remove coffee?',`"${esc(p.name)}" will be removed from the menu.`,'Remove',async()=>{const {error}=await sb.from('products').delete().eq('id',p.id);if(error){toast('Could not remove',I.issues);return;}await loadAll();render();toast('Coffee removed',I.trash);},true);});
@@ -560,7 +564,7 @@ async function signIn(){
   const btn=document.getElementById('signin');btn.disabled=true;
   const {error}=await sb.auth.signInWithPassword({email,password:pass});
   btn.disabled=false;
-  if(error){err.textContent='Incorrect email or password.';return;}
+  if(error){err.textContent=/confirm/i.test(error.message)?'Email not confirmed — confirm the user in Supabase.':(error.message||'Incorrect email or password.');return;}
   err.textContent='';await afterLogin();
 }
 async function afterLogin(){
