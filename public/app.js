@@ -19,7 +19,9 @@ const I = {
   eye:'<svg viewBox="0 0 24 24" fill="none"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.6"/></svg>',
   eyeoff:'<svg viewBox="0 0 24 24" fill="none"><path d="M4 4l16 16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M9.5 9.6A2.6 2.6 0 0 0 12 14.6M6.3 6.4C3.9 7.9 2.5 12 2.5 12S6 18.5 12 18.5c1.5 0 2.8-.3 3.9-.9M10 5.7c.6-.1 1.3-.2 2-.2 6 0 9.5 6.5 9.5 6.5s-.8 1.5-2.3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   shield:'<svg viewBox="0 0 24 24" fill="none"><path d="M12 3 5 5.6v5c0 4.3 3 7.4 7 8.6 4-1.2 7-4.3 7-8.6v-5L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
-  bean:'<svg viewBox="0 0 24 24" fill="none"><ellipse cx="12" cy="12" rx="7.5" ry="9" transform="rotate(35 12 12)" stroke="currentColor" stroke-width="1.6"/><path d="M8 8c3 2 5 5 8 8" stroke="currentColor" stroke-width="1.5"/></svg>'
+  bean:'<svg viewBox="0 0 24 24" fill="none"><ellipse cx="12" cy="12" rx="7.5" ry="9" transform="rotate(35 12 12)" stroke="currentColor" stroke-width="1.6"/><path d="M8 8c3 2 5 5 8 8" stroke="currentColor" stroke-width="1.5"/></svg>',
+  download:'<svg viewBox="0 0 24 24" fill="none"><path d="M12 4v10m0 0 4-4m-4 4-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+  upload:'<svg viewBox="0 0 24 24" fill="none"><path d="M12 20V10m0 0 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'
 };
 
 /* ============================ SUPABASE CLIENT ============================ */
@@ -271,7 +273,16 @@ function manageSettings(){
         <div class="help" id="set-prev">Sample price: <b>${money(220)}</b>. Prices are stored as numbers — changing currency changes the symbol, not the amount.</div></div>
       <button class="btn btn-primary" id="saveSettings" style="margin-top:6px">${I.check} Save settings</button>
     </div>
-    <div class="callout">${I.shield}<div>In the Supabase version these are stored once for the shop and shared across every till and device.</div></div>`;
+    <div class="card card-pad" style="max-width:540px;margin-top:16px">
+      <div class="section-title">Backup &amp; migration</div>
+      <div class="section-sub">Export your coffees, recipes, supplies and settings to a file — then import it into a new instance.</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn-ghost" id="exportCfg">${I.download} Export config</button>
+        <button class="btn-ghost" id="importCfg">${I.upload} Import config</button>
+      </div>
+      <div class="help">Sales history and team members aren't part of the config file — only your shop setup. Importing replaces the current coffees, supplies and settings.</div>
+    </div>
+    <div class="callout">${I.shield}<div>These live in the shop's settings, shared across every till and device.</div></div>`;
 }
 function setShopName(){document.querySelectorAll('.wordmark').forEach(e=>{e.textContent=(DB.settings&&DB.settings.shopName)||'GM Wellness';});}
 
@@ -326,6 +337,8 @@ function wire(){
       if(error){toast('Could not save settings',I.issues);return;}
       DB.settings={shopName,currency};setShopName();render();toast('Settings saved',I.check);};
   }
+  const exBtn=document.getElementById('exportCfg');if(exBtn)exBtn.onclick=exportConfig;
+  const imBtn=document.getElementById('importCfg');if(imBtn)imBtn.onclick=importConfigModal;
 
   // TEAM
   document.querySelectorAll('[data-role]').forEach(s=>s.onchange=()=>changeRole(s.dataset.role,s.value,s));
@@ -453,6 +466,69 @@ function openModal(opts){
 }
 function confirmModal(title,msg,label,onYes,danger){
   openModal({title,confirmLabel:label,danger,body:`<p style="margin:0;color:var(--ink-soft);font-size:14.5px">${msg}</p>`,onConfirm:()=>{onYes();}});
+}
+
+/* ============================ EXPORT / IMPORT CONFIG ============================ */
+function buildConfig(){
+  const nameById={}; DB.ingredients.forEach(i=>nameById[i.id]=i.name);
+  return {
+    gmWellnessConfig:true, version:1, exportedAt:new Date().toISOString(),
+    settings:{shopName:DB.settings.shopName,currency:DB.settings.currency},
+    ingredients:DB.ingredients.map(i=>({name:i.name,category:i.cat,unit:i.unit,packetSize:i.packet,coffeesPerPacket:i.perPacket,stock:i.stock,par:i.par})),
+    products:DB.products.map(p=>({name:p.name,price:p.price,recipe:p.recipe.map(([iid,q])=>({ingredient:nameById[iid]||iid,qty:q}))}))
+  };
+}
+function exportConfig(){
+  const json=JSON.stringify(buildConfig(),null,2);
+  const fname=`gm-wellness-config-${new Date().toISOString().slice(0,10)}.json`;
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="Export config">
+    <div class="modal-head"><h3>Export config</h3><button class="icon-btn" id="mx" aria-label="Close">${I.close}</button></div>
+    <div class="modal-body">
+      <p style="margin:0 0 10px;color:var(--ink-soft);font-size:13.5px">Save this and import it into a new instance. Download the file, or copy the text.</p>
+      <textarea id="exp-text" readonly class="m-input" style="min-height:170px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre">${esc(json)}</textarea>
+    </div>
+    <div class="modal-foot"><button class="btn-ghost" id="exp-copy">Copy</button><button class="btn btn-primary" id="exp-dl">${I.download} Download .json</button></div>
+  </div></div>`;
+  const close=()=>root.innerHTML='';
+  document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
+  document.getElementById('mx').onclick=close;
+  document.getElementById('exp-copy').onclick=()=>{const ta=document.getElementById('exp-text');ta.focus();ta.select();try{document.execCommand('copy');}catch(e){}if(navigator.clipboard){navigator.clipboard.writeText(json).catch(()=>{});}toast('Config copied',I.check);};
+  document.getElementById('exp-dl').onclick=()=>{try{const blob=new Blob([json],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fname;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Download started',I.download);}catch(e){toast('Download failed — use Copy instead',I.issues);}};
+}
+function importConfigModal(){
+  openModal({title:'Import config',confirmLabel:'Import & replace',danger:true,
+    body:`<p style="margin:0 0 12px;color:var(--ink-soft);font-size:13.5px">Choose a GM Wellness config file, or paste its contents below. This replaces the current coffees, supplies and settings. Sales history and team are kept.</p>
+      <input type="file" accept="application/json,.json" id="imp-file" class="m-input" style="padding:9px">
+      <textarea id="imp-text" class="m-input" style="margin-top:10px;min-height:120px;font-family:ui-monospace,monospace;font-size:12px" placeholder="…or paste config JSON here"></textarea>`,
+    onConfirm:root=>{
+      const txt=(root.querySelector('#imp-text').value||'').trim();
+      if(!txt){toast('Choose a file or paste JSON',I.issues);return false;}
+      let cfg;try{cfg=JSON.parse(txt);}catch(e){toast('That is not valid JSON',I.issues);return false;}
+      if(!cfg||!Array.isArray(cfg.ingredients)||!Array.isArray(cfg.products)){toast('Not a GM Wellness config file',I.issues);return false;}
+      importApply(cfg);
+    }});
+  const fi=document.getElementById('imp-file');
+  if(fi)fi.onchange=()=>{const f=fi.files&&fi.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{document.getElementById('imp-text').value=r.result;};r.readAsText(f);};
+}
+async function importApply(cfg){
+  toast('Importing…',I.upload);
+  try{
+    let r;
+    r=await sb.from('products').delete().not('id','is',null); if(r.error) throw r.error;
+    r=await sb.from('ingredients').delete().not('id','is',null); if(r.error) throw r.error;
+    const ingRows=cfg.ingredients.map(x=>({name:x.name,category:x.category||x.cat||'Extras',unit:x.unit||'g',packet_size:+x.packetSize||+x.packet||1000,coffees_per_packet:+x.coffeesPerPacket||+x.perPacket||50,stock:+x.stock||0,par:+x.par||1000}));
+    const ins=await sb.from('ingredients').insert(ingRows).select(); if(ins.error) throw ins.error;
+    const idByName={}; (ins.data||[]).forEach(i=>idByName[i.name.toLowerCase()]=i.id);
+    const prodRows=cfg.products.map(p=>({name:p.name,price:+p.price||0}));
+    const pins=await sb.from('products').insert(prodRows).select(); if(pins.error) throw pins.error;
+    const pidByName={}; (pins.data||[]).forEach(p=>pidByName[p.name.toLowerCase()]=p.id);
+    const items=[];
+    cfg.products.forEach(p=>{const pid=pidByName[(p.name||'').toLowerCase()];(p.recipe||[]).forEach(rr=>{const iid=idByName[(rr.ingredient||rr.name||'').toLowerCase()];const q=+rr.qty||0;if(pid&&iid&&q>0)items.push({product_id:pid,ingredient_id:iid,qty:q});});});
+    if(items.length){r=await sb.from('recipe_items').insert(items); if(r.error) throw r.error;}
+    if(cfg.settings){r=await sb.from('shop_settings').update({shop_name:cfg.settings.shopName||DB.settings.shopName,currency:cfg.settings.currency||DB.settings.currency}).eq('id',1); if(r.error) throw r.error;}
+    await loadAll();setShopName();manageTab='settings';render();toast('Config imported',I.check);
+  }catch(e){toast('Import failed: '+(e.message||e),I.issues);}
 }
 
 /* ============================ TOAST ============================ */

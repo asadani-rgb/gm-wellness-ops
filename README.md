@@ -137,6 +137,15 @@ passwords — are done **inside the app** (Admin area), no code needed.
 
 ---
 
+## Backup & migration (export / import config)
+
+In the app, **Admin → Settings → Backup & migration** lets an admin:
+
+- **Export config** — downloads a JSON file with your coffees, recipes, supplies and shop settings (recipes reference ingredients by name, so the file ports cleanly between projects). Sales history and team members are *not* included.
+- **Import config** — pick that file (or paste it) to load the setup into a fresh instance. Importing **replaces** the current coffees, supplies and settings; sales history and team are kept.
+
+This makes standing up a second shop or a new Supabase project a two-minute job: run `schema.sql`, create your admin, then import the file.
+
 ## What's where
 
 ```
