@@ -221,19 +221,24 @@ function viewManage(){
 }
 function manageSupplies(){
   const rows=DB.ingredients.map(x=>{const s=statusOf(ratio(x));
-    return `<tr data-ing="${x.id}"><td><b>${esc(x.name)}</b><div style="font-size:11.5px;color:var(--ink-faint)">${esc(x.cat)}</div></td>
-      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}"><span class="unit">${x.unit}</span></div></td>
-      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}"><span class="unit"></span></div></td>
-      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}"><span class="unit">${x.unit}</span></div></td>
-      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}"><span class="unit">${x.unit}</span></div></td>
-      <td class="r"><span class="pill ${s}" style="font-size:10.5px">${statusLabel(s)}</span></td>
-      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-restock="${x.id}">${I.plus}Packet</button><button class="btn-ghost btn-mini" data-delsupply="${x.id}" title="Delete supply" style="padding:6px 8px">${I.trash}</button></div></td></tr>`;}).join('');
+    return `<tr data-ing="${x.id}"><td><b>${esc(x.name)}</b><div style="font-size:11.5px;color:var(--ink-faint)">${esc(x.cat)} · measured in ${x.unit}</div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}" title="How much one packet/bag holds, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}" title="How many cups one packet makes"><span class="unit"></span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}" title="Current quantity on hand, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}" title="Full / ideal stock level, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
+      <td class="r"><span class="pill ${s}" style="font-size:10.5px">${statusLabel(s)}</span><div style="font-size:10.5px;color:var(--ink-faint);margin-top:3px">${coffeesLeft(x)} cups</div></td>
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap"><button class="btn-ghost btn-mini" data-updrow="${x.id}" title="Save this row's changes">${I.check}Update</button><button class="btn-ghost btn-mini" data-restock="${x.id}" title="Add one full packet (${x.packet}${x.unit}) to stock">${I.plus}Packet</button><button class="btn-ghost btn-mini" data-delsupply="${x.id}" title="Delete this supply" style="padding:6px 8px">${I.trash}</button></div></td></tr>`;}).join('');
+  const H=(label,tip)=>`<th style="text-align:center">${label} <span class="hint" title="${tip}" tabindex="0" aria-label="${tip}">i</span></th>`;
   return `<div class="card"><div class="tbl-wrap"><table>
-      <thead><tr><th>Supply</th><th style="text-align:center">Packet size</th><th style="text-align:center">Coffees / packet</th><th style="text-align:center">In stock</th><th style="text-align:center">Target level</th><th class="r">Status</th><th class="r">Actions</th></tr></thead>
+      <thead><tr><th>Supply</th>
+        ${H('Packet size',"How much one packet or bag holds, in the item&#39;s unit (g, ml or pcs). Example: a 1000 g bag of beans.")}
+        ${H('Coffees / packet',"How many cups one packet makes. Converts stock into cups-left. Example: a 1000 g bag makes about 55 coffees.")}
+        ${H('In stock',"Current quantity on hand right now, in the item&#39;s unit (g, ml or pcs).")}
+        ${H('Target level',"Your full / ideal amount to keep. Status (Healthy, Low, Critical) and the bars are measured against this.")}
+        <th class="r">Status</th><th class="r">Actions</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>
-    <div class="callout" style="margin-top:14px">${I.stock}<div><b>Target level</b> is the full/ideal amount to keep in stock for each item. Status (Healthy / Low / Critical) and the stock bars are measured against it. <br><b>Coffees / packet</b> is how many cups one packet yields — it converts stock into "cups left." Edit any number and click away to save.</div></div>
-    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn-ghost" id="addSupply">${I.plus} Add supply</button>
-      <span class="help" style="margin:auto 0">"+ Packet" adds one packet to stock · trash removes a supply (if it isn't used in a recipe).</span></div>`;
+    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center"><button class="btn-ghost" id="addSupply">${I.plus} Add supply</button>
+      <span class="help">Edit any values in a row, then press <b>Enter</b> or click <b>Update</b> to save. Hover the <b>i</b> on each column header for what it means.</span></div>`;
 }
 function manageCoffees(){
   const rows=DB.products.map(p=>{const {cups,limitId}=cupCapacity(p);const lim=ing(limitId);
@@ -317,7 +322,8 @@ function wire(){
     form.onsubmit=e=>{e.preventDefault();const a=parseFloat(amt.value);if(!a||a<=0){amt.focus();return;}logIssue(sel.value,a,mode,document.getElementById('ii-reason').value.trim()||'No reason given');};}
 
   document.querySelectorAll('[data-mtab]').forEach(b=>b.onclick=()=>{manageTab=b.dataset.mtab;render();});
-  document.querySelectorAll('tr[data-ing] .mini-input').forEach(inp=>inp.onchange=async()=>{const id=inp.closest('tr').dataset.ing;const x=ing(id);const v=parseFloat(inp.value);if(isNaN(v)||v<0){inp.value=Math.round(x[inp.dataset.f]);return;}const col={packet:'packet_size',perPacket:'coffees_per_packet',stock:'stock',par:'par'}[inp.dataset.f];const {data,error}=await sb.from('ingredients').update({[col]:v}).eq('id',id).select('id');if(error){toast('Save failed: '+error.message,I.issues);return;}if(!data||!data.length){toast('Not saved — you may not have admin rights',I.issues);return;}x[inp.dataset.f]=v;});
+  document.querySelectorAll('tr[data-ing] .mini-input').forEach(inp=>inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();updateSupplyRow(inp.closest('tr').dataset.ing);}}));
+  document.querySelectorAll('[data-updrow]').forEach(b=>b.onclick=()=>updateSupplyRow(b.dataset.updrow,b));
   document.querySelectorAll('[data-restock]').forEach(b=>b.onclick=async()=>{const x=ing(b.dataset.restock);b.disabled=true;const {data,error}=await sb.from('ingredients').update({stock:Number(x.stock)+Number(x.packet)}).eq('id',x.id).select('id,stock');b.disabled=false;if(error){toast('Restock failed: '+error.message,I.issues);return;}if(!data||!data.length){toast('Not saved — you may not have admin rights',I.issues);return;}await loadAll();render();toast(`+1 packet of ${x.name} (now ${fmtNum(Math.round(data[0].stock))}${x.unit})`,I.plus);});
   const addS=document.getElementById('addSupply');if(addS)addS.onclick=addSupplyModal;
   document.querySelectorAll('[data-delsupply]').forEach(b=>b.onclick=()=>{const x=ing(b.dataset.delsupply);if(!x)return;
@@ -398,6 +404,22 @@ function resetPwModal(id){
       <div class="help">Minimum 6 characters.</div>`,
     onConfirm:root=>{const pass=root.querySelector('#rp-pass').value;if(!pass||pass.length<6){toast('Password needs 6+ characters',I.issues);return false;}
       sb.functions.invoke('admin-users',{body:{action:'setPassword',userId:id,password:pass}}).then(({error})=>{if(error){toast('Could not update password',I.issues);}else{toast('Password updated',I.check);}});}});
+}
+
+/* ---------- update a supply row (all fields at once) ---------- */
+async function updateSupplyRow(id, btn){
+  const tr=document.querySelector(`tr[data-ing="${id}"]`); if(!tr) return;
+  const num=f=>{const el=tr.querySelector(`[data-f="${f}"]`);const v=parseFloat(el.value);return isNaN(v)?null:v;};
+  const packet=num('packet'), perPacket=num('perPacket'), stock=num('stock'), par=num('par');
+  if(packet===null||perPacket===null||stock===null||par===null){toast('Please enter valid numbers',I.issues);return;}
+  if(packet<1||perPacket<1||par<1||stock<0){toast('Values must be positive (stock can be 0)',I.issues);return;}
+  if(btn)btn.disabled=true;
+  const {data,error}=await sb.from('ingredients').update({packet_size:packet,coffees_per_packet:perPacket,stock:stock,par:par}).eq('id',id).select('id');
+  if(btn)btn.disabled=false;
+  if(error){toast('Save failed: '+error.message,I.issues);return;}
+  if(!data||!data.length){toast('Not saved — you may not have admin rights',I.issues);return;}
+  const nm=(ing(id)||{}).name||'supply';
+  await loadAll();render();toast('Saved '+nm,I.check);
 }
 
 /* ---------- add supply ---------- */
