@@ -10,7 +10,8 @@
 // client key, and your data is protected by Row Level Security (see
 // supabase/schema.sql). NEVER put the "service_role" key in this file.
 // ─────────────────────────────────────────────────────────────
+// GM Wellness - Supabase connection (anon key is public / safe to commit)
 window.GM_CONFIG = {
-  SUPABASE_URL: "https://YOUR-PROJECT-REF.supabase.co",
-  SUPABASE_ANON_KEY: "YOUR-ANON-PUBLIC-KEY"
+  SUPABASE_URL: "https://maveiesrskwfplzjsyjr.supabase.co",
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hdmVpZXNyc2t3ZnBsempzeWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNTYxODQsImV4cCI6MjEwMzgzMjE4NH0.kBOITjSA4f7J8-ZmHbjdEHIzIVzl9LMF-TcHBpvjevc"
 };
