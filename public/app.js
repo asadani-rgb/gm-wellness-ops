@@ -222,17 +222,18 @@ function viewManage(){
 function manageSupplies(){
   const rows=DB.ingredients.map(x=>{const s=statusOf(ratio(x));
     return `<tr data-ing="${x.id}"><td><b>${esc(x.name)}</b><div style="font-size:11.5px;color:var(--ink-faint)">${esc(x.cat)}</div></td>
-      <td class="r"><div class="numcell"><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}"><span class="unit">${x.unit}</span></div></td>
-      <td class="r"><div class="numcell"><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}"><span class="unit"></span></div></td>
-      <td class="r"><div class="numcell"><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}"><span class="unit">${x.unit}</span></div></td>
-      <td class="r"><div class="numcell"><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}"><span class="unit">${x.unit}</span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}"><span class="unit">${x.unit}</span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}"><span class="unit"></span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}"><span class="unit">${x.unit}</span></div></td>
+      <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}"><span class="unit">${x.unit}</span></div></td>
       <td class="r"><span class="pill ${s}" style="font-size:10.5px">${statusLabel(s)}</span></td>
       <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-restock="${x.id}">${I.plus}Packet</button><button class="btn-ghost btn-mini" data-delsupply="${x.id}" title="Delete supply" style="padding:6px 8px">${I.trash}</button></div></td></tr>`;}).join('');
   return `<div class="card"><div class="tbl-wrap"><table>
-      <thead><tr><th>Supply</th><th class="r">Packet size</th><th class="r">Coffees / packet</th><th class="r">In stock</th><th class="r">Target (par)</th><th class="r">Status</th><th class="r">Actions</th></tr></thead>
+      <thead><tr><th>Supply</th><th style="text-align:center">Packet size</th><th style="text-align:center">Coffees / packet</th><th style="text-align:center">In stock</th><th style="text-align:center">Target level</th><th class="r">Status</th><th class="r">Actions</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>
+    <div class="callout" style="margin-top:14px">${I.stock}<div><b>Target level</b> is the full/ideal amount to keep in stock for each item. Status (Healthy / Low / Critical) and the stock bars are measured against it. <br><b>Coffees / packet</b> is how many cups one packet yields — it converts stock into "cups left." Edit any number and click away to save.</div></div>
     <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn-ghost" id="addSupply">${I.plus} Add supply</button>
-      <span class="help" style="margin:auto 0">Edit a number then click away to save · "+ Packet" adds one packet to stock · trash removes a supply (if it isn't used in a recipe).</span></div>`;
+      <span class="help" style="margin:auto 0">"+ Packet" adds one packet to stock · trash removes a supply (if it isn't used in a recipe).</span></div>`;
 }
 function manageCoffees(){
   const rows=DB.products.map(p=>{const {cups,limitId}=cupCapacity(p);const lim=ing(limitId);
