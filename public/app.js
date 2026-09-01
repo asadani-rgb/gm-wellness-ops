@@ -96,7 +96,7 @@ function renderNav(){
   document.getElementById('botnav').innerHTML=items.map(n=>`<button data-view="${n.id}" ${n.id===view?'aria-current="page"':''}>${n.icon}<span>${n.label}</span></button>`).join('');
   document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>go(b.dataset.view));
 }
-function go(v){view=v;renderNav();render();document.getElementById('view').focus();window.scrollTo({top:0,behavior:'instant'});}
+async function go(v){view=v;renderNav();render();window.scrollTo({top:0,behavior:'instant'});try{await loadAll();render();}catch(e){}}
 
 /* ============================ RENDER ============================ */
 function render(){
@@ -108,7 +108,9 @@ function render(){
 
 /* ---------- SELL ---------- */
 function viewSell(){
-  const lowCount=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').length;
+  const lowItems=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').sort((a,b)=>ratio(a)-ratio(b));
+  const lowCount=lowItems.length;
+  const lowNames=lowItems.map(x=>x.name);
   const cards=DB.products.map(p=>{
     const {cups,limitId}=cupCapacity(p); const lim=ing(limitId);
     const rq=limitId?p.recipe.find(r=>r[0]===limitId)[1]:1;
@@ -127,7 +129,7 @@ function viewSell(){
   }).join('');
   return `<div class="page-head">
       <div><h1>Sell coffee</h1><div class="ph-sub">Tap a coffee to record a sale. Stock updates instantly.</div></div>
-      ${lowCount?`<span class="pill warn">${I.issues} ${lowCount} item${lowCount>1?'s':''} need restock</span>`:`<span class="pill good">${I.check} All stock healthy</span>`}
+      ${lowCount?`<button class="pill warn" data-goto="stock" data-tip="Tap to open Stock. Needs restock: ${esc(lowNames.join(', '))}" style="border:none;cursor:pointer;text-align:left;max-width:100%;white-space:normal">${I.issues} Restock: ${esc(lowNames.slice(0,3).join(', '))}${lowNames.length>3?` +${lowNames.length-3} more`:''}</button>`:`<span class="pill good">${I.check} All stock healthy</span>`}
     </div><div class="grid sell-grid">${cards}</div>`;
 }
 
@@ -186,7 +188,8 @@ function viewAnalytics(){
   const DAY=86400000,now=Date.now(),from=now-14*DAY;
   const recent=DB.sales.filter(s=>s.ts>=from);
   const totalRev=recent.reduce((a,s)=>a+s.price,0),totalCups=recent.length,aov=totalCups?totalRev/totalCups:0;
-  const lowCount=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').length;
+  const lowItems=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').sort((a,b)=>ratio(a)-ratio(b));
+  const lowCount=lowItems.length; const lowNames=lowItems.map(x=>x.name);
   const byP={}; DB.products.forEach(p=>byP[p.id]={name:p.name,cups:0,rev:0});
   recent.forEach(s=>{if(byP[s.pid]){byP[s.pid].cups++;byP[s.pid].rev+=s.price;}});
   const prodArr=Object.values(byP).sort((a,b)=>b.cups-a.cups); const maxCups=Math.max(1,...prodArr.map(p=>p.cups)); const top=prodArr[0];
@@ -194,7 +197,8 @@ function viewAnalytics(){
   const days=[]; for(let d=13;d>=0;d--){const st=new Date(now-d*DAY);st.setHours(0,0,0,0);const en=st.getTime()+DAY;
     days.push({cups:DB.sales.filter(s=>s.ts>=st.getTime()&&s.ts<en).length,lab:new Date(st).toLocaleDateString('en-AE',{weekday:'short'}).slice(0,2),today:d===0});}
   const maxDay=Math.max(1,...days.map(d=>d.cups));
-  const cols=days.map(d=>`<div class="col ${d.today?'today':''}" title="${d.cups} cups"><div class="cbar" style="height:${Math.round(d.cups/maxDay*100)}%"></div><div class="clab">${d.lab}</div></div>`).join('');
+  const cols=days.map(d=>`<div class="col ${d.today?'today':''}" data-tip="${d.lab}: ${d.cups} cups"><div class="cbar" style="height:${Math.max(3,Math.round(d.cups/maxDay*120))}px"></div><div class="clab">${d.lab}</div></div>`).join('');
+  const emptyChart=`<div class="empty">${I.analytics}<div>No sales in the last 14 days yet.<br>Record sales on the Sell screen and they'll appear here.</div></div>`;
   const order={crit:0,warn:1,good:2};
   const health=[...DB.ingredients].sort((a,b)=>order[statusOf(ratio(a))]-order[statusOf(ratio(b))]).slice(0,6).map(x=>{const r=ratio(x),s=statusOf(r);
     return `<div class="hbar"><span class="hl">${esc(x.name)}</span><span class="htrack"><i style="width:${Math.max(3,Math.round(r*100))}%;background:var(--${s})"></i></span><span class="hv num" style="color:var(--${s})">${coffeesLeft(x)}</span></div>`;}).join('');
@@ -203,11 +207,11 @@ function viewAnalytics(){
       <div class="card kpi"><div class="k-lab">${I.analytics} Revenue</div><div class="k-val">${money(totalRev)}</div><div class="k-sub">${totalCups} cups sold</div></div>
       <div class="card kpi"><div class="k-lab">${I.sell} Avg. order</div><div class="k-val">${money(aov)}</div><div class="k-sub">per cup</div></div>
       <div class="card kpi"><div class="k-lab">${I.bean} Top seller</div><div class="k-val" style="font-size:26px">${top?esc(top.name):'—'}</div><div class="k-sub">${top?top.cups+' cups':''}</div></div>
-      <div class="card kpi"><div class="k-lab">${I.stock} Needs restock</div><div class="k-val" style="color:${lowCount?'var(--warn)':'var(--good)'}">${lowCount}</div><div class="k-sub">of ${DB.ingredients.length} items</div></div>
+      <button class="card kpi" data-goto="stock" data-tip="${lowCount?('Needs restock: '+esc(lowNames.join(', '))):'All items healthy'}" style="border:1px solid var(--line);text-align:left;cursor:pointer;font:inherit"><div class="k-lab">${I.stock} Needs restock</div><div class="k-val" style="color:${lowCount?'var(--warn)':'var(--good)'}">${lowCount}</div><div class="k-sub">${lowCount?esc(lowNames.slice(0,2).join(', '))+(lowNames.length>2?` +${lowNames.length-2} more`:''):'all healthy'}</div></button>
     </div>
     <div class="grid two-col" style="margin-bottom:16px">
-      <div class="card card-pad"><div class="section-title">Cups sold by coffee</div><div class="section-sub">Which drinks move — last 14 days.</div><div class="hbars">${hbars}</div></div>
-      <div class="card card-pad"><div class="section-title">Daily volume</div><div class="section-sub">Cups sold per day (today highlighted).</div><div class="cols" role="img" aria-label="Daily cups sold over 14 days">${cols}</div></div>
+      <div class="card card-pad"><div class="section-title">Cups sold by coffee</div><div class="section-sub">Which drinks move — last 14 days.</div>${totalCups?`<div class="hbars">${hbars}</div>`:emptyChart}</div>
+      <div class="card card-pad"><div class="section-title">Daily volume</div><div class="section-sub">Cups sold per day (today highlighted).</div>${totalCups?`<div class="cols" role="img" aria-label="Daily cups sold over 14 days">${cols}</div>`:emptyChart}</div>
     </div>
     <div class="card card-pad"><div class="section-title">Stock situation</div><div class="section-sub">Coffees' worth remaining — lowest first. Colour shows status.</div><div class="hbars">${health}</div></div>`;
 }
@@ -311,6 +315,7 @@ async function logIssue(id,amount,mode,reason){const {error}=await sb.rpc('log_i
 /* ============================ WIRE ============================ */
 function wire(){
   document.querySelectorAll('[data-sell]').forEach(b=>b.onclick=()=>sell(b.dataset.sell));
+  document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>go(b.dataset.goto));
 
   const form=document.getElementById('issueForm');
   if(form){let mode='coffees';const hint=document.getElementById('ii-unithint'),prev=document.getElementById('ii-preview'),sel=document.getElementById('ii-ing'),amt=document.getElementById('ii-amt');
