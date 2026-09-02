@@ -404,6 +404,10 @@
   .receipt .rc-grand span,.receipt .rc-grand b{font-weight:700;color:#111}
   .receipt .rc-foot{text-align:center;font-size:10.5px;color:#666;margin-top:12px;border-top:1px dashed #999;padding-top:8px}
 
+  .alert-danger{margin-top:12px;padding:11px 13px;border-radius:10px;font-size:12.8px;line-height:1.55;
+    background:color-mix(in srgb, var(--crit) 12%, transparent);
+    border:1px solid color-mix(in srgb, var(--crit) 45%, transparent);color:var(--crit)}
+  .alert-danger b{color:var(--crit)}
   /* --- discounts, cancelled invoices --- */
   .disc-box{margin-top:18px;padding:14px;border:1px dashed var(--line);border-radius:12px;background:var(--surface-2,transparent)}
   .disc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap}

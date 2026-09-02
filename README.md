@@ -180,6 +180,7 @@ README.md
 1. `supabase/schema.sql`  - base tables, RLS, first-user-becomes-admin trigger
 2. `supabase/phase2.sql`  - cart POS, extras, orders, GST tax invoices
 3. `supabase/phase3.sql`  - auditable discounts, soft-cancelled invoices, customer name
+4. `supabase/phase4.sql`  - manager override PIN for discounts above the staff limit
 
 `phase3.sql` is idempotent and prints notices telling you which policies it changed.
 After running it, Team → Add member still needs the `admin-users` Edge Function deployed

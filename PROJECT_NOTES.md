@@ -28,6 +28,8 @@ supabase/
                NOTE: reconstructed 2026-09-02 from the live DB; the original was never committed.
   phase3.sql   discounts (+ append-only discount_log), soft-cancelled invoices, customer name,
                recipe snapshot on order_items — run once, after phase2
+  phase4.sql   manager override PIN for discounts above the staff limit (shop_secrets, bcrypt
+               hash, set_override_pin/has_override_pin, orders.over_limit) — run once, after phase3
   seed.sql     sample coffees + supplies (optional)
   functions/admin-users/index.ts   Edge Function: admin add-user / reset-password / remove
 README.md      full first-time setup + deploy guide
@@ -52,7 +54,9 @@ README.md      full first-time setup + deploy guide
   stock and marks the invoice CANCELLED with a reason. The row and its number are never deleted.
 - **Discounts:** presets 5/10/15% + custom (% or amount), applied at Review. A **reason is mandatory**.
   Staff are capped by `shop_settings.max_staff_discount_pct` (default 15%), **enforced in the RPC**,
-  not the browser; admins can override. Every discount is written to the append-only `discount_log`
+  not the browser. Above the cap a staff member sees a **red alert** (management may recover an
+  unjustified discount from salary) and must enter the **manager override PIN**; admins are warned
+  but never asked for it. Over-cap orders are flagged `orders.over_limit` and called out in Reports. Every discount is written to the append-only `discount_log`
   with who/how much/why, plus onto the order for the bill. GST is charged on the **discounted** value
   (s.15(3)(a) CGST Act - discount shown on the face of the invoice).
 - **Reports (admin):** date range (today / yesterday / 7d / month / last month / FY / custom) →
@@ -99,6 +103,19 @@ syrups 10 ml (5–30) · pcs 1 (1–3). Warnings are soft (never block).
   append-only by construction - only the RPC can write to it.
 - `order_items.recipe_snapshot` records the recipe used at the time of sale, so cancelling an old
   order restores what was actually consumed even if the recipe has since been edited.
+- The override PIN lives in `shop_secrets` as a **bcrypt hash**, in a table with RLS on and **no
+  policies at all** plus `revoke all` - unreachable over the API. Only `set_override_pin` (admin
+  only) and `record_order` touch it. There is no rate limit on PIN attempts; a signed-in staff
+  member could brute-force a 4-digit PIN through the API, so prefer 6+ digits and rotate it if
+  someone leaves.
+
+## Known trap: never re-render a view while someone is typing in it
+`render()` rebuilds `#view` wholesale. Doing that on every `oninput` destroyed the number input
+mid-keystroke - you literally could not type `100` into the discount box. The discount panel now
+renders once and `refreshDisc()` patches only the pieces that change (pill, warning, totals,
+submit state, hidden toggles). Structural changes (preset buttons) still call `render()`; text
+fields must not. Same reason `.empty svg` needed an explicit size: unsized inline SVGs expand to
+fill their container.
 
 ## Ideas / next
 - Deploy/confirm `admin-users` (in-app Add member / Reset password). Supabase → Edge Functions →

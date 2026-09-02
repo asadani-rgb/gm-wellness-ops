@@ -44,10 +44,10 @@ const RC_FORMATS={a4:'A4 / slip',th80:'80 mm',th58:'58 mm'};
 function rcFmtGet(){try{const v=localStorage.getItem('gm_rcfmt');return RC_FORMATS[v]?v:'a4';}catch(e){return 'a4';}}
 function rcFmtSet(v){try{localStorage.setItem('gm_rcfmt',v);}catch(e){}}
 let rcFmt=rcFmtGet();
-let coState={orderType:'dine-in',paymentMode:'Cash',discMode:'pct',discPct:0,discAmt:0,discCustom:false,reasonPreset:'',reasonText:'',customerName:''};
+let coState={orderType:'dine-in',paymentMode:'Cash',discMode:'pct',discPct:0,discAmt:0,discCustom:false,reasonPreset:'',reasonText:'',customerName:'',pin:''};
 const DISCOUNT_PRESETS=[0,5,10,15];
 const REASON_PRESETS=['Regular customer','Loyalty / repeat visit','Staff meal','Service delay','Remake / damaged','Owner comp','Promotion','Other (type below)'];
-function resetCheckoutState(){coState={orderType:coState.orderType,paymentMode:coState.paymentMode,discMode:'pct',discPct:0,discAmt:0,discCustom:false,reasonPreset:'',reasonText:'',customerName:''};}
+function resetCheckoutState(){coState={orderType:coState.orderType,paymentMode:coState.paymentMode,discMode:'pct',discPct:0,discAmt:0,discCustom:false,reasonPreset:'',reasonText:'',customerName:'',pin:''};}
 function discCap(){const v=DB.settings&&DB.settings.maxStaffDiscPct;return v==null?15:Number(v);}
 function discInfo(){
   const gross=cartTotal();
@@ -61,7 +61,12 @@ function discInfo(){
   const reason = coState.reasonPreset==='Other (type below)' || !coState.reasonPreset
     ? (coState.reasonText||'').trim()
     : coState.reasonPreset;
-  return {gross,amt,pct,cap,isAdmin,overCap:(!isAdmin && pct>cap), reason, needsReason:(amt>0 && !reason)};
+  const over = amt>0 && pct>cap;
+  const needsPin = over && !isAdmin;
+  const pin=(coState.pin||'').trim();
+  const needsReason = amt>0 && !reason;
+  return {gross,amt,pct,cap,isAdmin,over,needsPin,pin,reason,needsReason,
+          blocked:(needsReason || (needsPin && pin.length<4))};
 }
 
 function mapSettings(d){ return d? {shopName:d.shop_name,currency:d.currency,legalName:d.legal_name||'',gstin:d.gstin||'',address:d.address||'',state:d.state||'',phone:d.phone||'',fssai:d.fssai||'',invoicePrefix:d.invoice_prefix||'GMW',gstRate:d.gst_rate!=null?Number(d.gst_rate):5,orderTypeOn:d.order_type_on!==false,maxStaffDiscPct:d.max_staff_discount_pct!=null?Number(d.max_staff_discount_pct):15} : {...DEF_SETTINGS}; }
@@ -89,7 +94,7 @@ async function loadAll(){
   }
   if(orders.data){
     DB.orders=orders.data.map(o=>({id:o.id,invoiceNo:o.invoice_no,gross:Number(o.gross),taxable:Number(o.taxable),cgst:Number(o.cgst),sgst:Number(o.sgst),tax:Number(o.tax),roundOff:Number(o.round_off),total:Number(o.total),paymentMode:o.payment_mode,orderType:o.order_type,ts:new Date(o.created_at).getTime(),
-      status:o.status||'active', customerName:o.customer_name||'',
+      status:o.status||'active', customerName:o.customer_name||'', overLimit:o.over_limit===true,
       discount:Number(o.discount_amount||0), discountPct:o.discount_pct!=null?Number(o.discount_pct):0,
       discountReason:o.discount_reason||'', discountBy:o.discount_by_name||'',
       cancelledAt:o.cancelled_at?new Date(o.cancelled_at).getTime():0, cancelledBy:o.cancelled_by_name||'', cancelReason:o.cancel_reason||'',
@@ -232,43 +237,88 @@ function openAddModal(pid){
 }
 
 /* ---------- CHECKOUT ---------- */
+function coTotalsHTML(){
+  const d=discInfo(), rate=DB.settings.gstRate||5;
+  const total=Math.round(d.gross-d.amt);
+  const taxable=+(total/(1+rate/100)).toFixed(2), tax=+(total-taxable).toFixed(2);
+  const cgst=+(tax/2).toFixed(2), sgst=+(tax-cgst).toFixed(2);
+  return `${d.amt>0?`<div><span>Subtotal</span><b class="num">${money(d.gross)}</b></div><div><span>Discount (${d.pct}%)</span><b class="num" style="color:var(--warn)">−${money(d.amt)}</b></div>`:''}
+    <div><span>Taxable value</span><b class="num">${money(taxable)}</b></div>
+    <div><span>CGST @ ${rate/2}%</span><b class="num">${money(cgst)}</b></div>
+    <div><span>SGST @ ${rate/2}%</span><b class="num">${money(sgst)}</b></div>
+    <div class="co-grand"><span>Total payable</span><b class="num">${money(total)}</b></div>`;
+}
+// Updates the discount panel in place. Re-rendering the whole view on every
+// keystroke was destroying the number input mid-type (you could not type 100).
+function refreshDisc(){
+  const d=discInfo();
+  const set=(id,html)=>{const el=document.getElementById(id);if(el)el.innerHTML=html;};
+  const show=(id,on)=>{const el=document.getElementById(id);if(el)el.hidden=!on;};
+
+  set('discPill', d.amt>0
+    ? `<span class="pill ${d.over?'crit':'warn'}" style="font-size:10.5px">−${money(d.amt)} · ${d.pct}%</span>`
+    : `<span class="help" style="margin:0">None</span>`);
+
+  set('discWarn', d.over
+    ? `<div class="alert-danger">
+         <b>${d.pct}% is above the ${d.cap}% limit.</b>
+         This discount is recorded against <b>${esc((me&&me.name)||'you')}</b> and reviewed by management.
+         If the reason is not justified, management reserves the right to recover the amount from your salary.
+         ${d.needsPin?'<div style="margin-top:6px">A manager override PIN is required to continue.</div>':''}
+       </div>` : '');
+
+  show('discExtra', d.amt>0);
+  show('pinRow', d.needsPin);
+  show('d-reasontext', coState.reasonPreset==='Other (type below)' || !coState.reasonPreset);
+
+  set('discNote', d.amt>0&&!d.blocked
+    ? `Logged against <b>${esc((me&&me.name)||'you')}</b> and visible in Admin → Reports.`
+    : (d.needsReason?'<span style="color:var(--crit)">Pick or type a reason — every discount is logged for the owner.</span>':''));
+
+  const tot=document.getElementById('coTotals'); if(tot) tot.innerHTML=coTotalsHTML();
+  const btn=document.getElementById('submitOrder');
+  if(btn){ btn.disabled=d.blocked; btn.style.opacity=d.blocked?'.5':''; btn.style.cursor=d.blocked?'not-allowed':''; }
+}
 function viewCheckout(){
-  if(!cart.length) return `<div class="page-head"><div><h1>Review order</h1></div></div><div class="card card-pad"><div class="empty">${I.cart}<div>Your order is empty.</div></div><div style="text-align:center;margin-top:8px"><button class="btn btn-primary" data-goto="sell">Back to Sell</button></div></div>`;
+  if(!cart.length) return `<div class="page-head"><div><h1>Review order</h1></div></div><div class="card card-pad"><div class="empty">Your order is empty.</div><div style="text-align:center;margin-top:8px"><button class="btn btn-primary" data-goto="sell">Back to Sell</button></div></div>`;
   const rows=cart.map(l=>`<div class="co-row"><div class="co-main"><b>${esc(l.name)}</b>${l.extras.length?`<div class="co-ex">+ ${l.extras.map(e=>esc(e.name)+(e.price>0?` (${money(e.price)})`:'')).join(', ')}</div>`:''}</div>
       <div class="qty"><button class="icon-btn" data-cq="-" data-uid="${l.uid}" aria-label="Decrease">${I.minus}</button><b>${l.qty}</b><button class="icon-btn" data-cq="+" data-uid="${l.uid}" aria-label="Increase">${I.plus}</button></div>
       <div class="co-amt num">${money(lineGross(l))}</div>
       <button class="icon-btn" data-crm="${l.uid}" aria-label="Remove" style="width:32px;height:32px">${I.trash}</button></div>`).join('');
 
   const d=discInfo(), rate=DB.settings.gstRate||5;
-  const total=Math.round(d.gross-d.amt);
-  const taxable=+(total/(1+rate/100)).toFixed(2), tax=+(total-taxable).toFixed(2);
-  const cgst=+(tax/2).toFixed(2), sgst=+(tax-cgst).toFixed(2);
   const otOn=DB.settings.orderTypeOn!==false;
   const custom = coState.discCustom===true;
-  const blocked = d.overCap || d.needsReason;
 
   const discBlock=`
     <div class="disc-box">
-      <div class="disc-head"><span class="lab" style="margin:0">Discount</span>
-        ${d.amt>0?`<span class="pill warn" style="font-size:10.5px">−${money(d.amt)} · ${d.pct}%</span>`:`<span class="help" style="margin:0">None</span>`}</div>
+      <div class="disc-head"><span class="lab" style="margin:0">Discount</span><span id="discPill"></span></div>
       <div class="seg-inline seg-wrap" role="group" aria-label="Discount">
         ${DISCOUNT_PRESETS.map(v=>`<button type="button" data-dp="${v}" aria-pressed="${!custom&&(Number(coState.discPct)||0)===v}">${v===0?'None':v+'%'}</button>`).join('')}
         <button type="button" data-dp="custom" aria-pressed="${custom}">Custom</button>
       </div>
       ${custom?`<div class="form-grid" style="margin-top:10px">
-        <div><label class="lab" for="d-pct">Percent off</label><div class="numcell"><input class="mini-input" id="d-pct" type="number" min="0" max="100" step="0.5" inputmode="decimal" value="${coState.discMode==='pct'?(coState.discPct||''):''}" placeholder="0"><span class="unit">%</span></div></div>
-        <div><label class="lab" for="d-amt">or flat amount</label><div class="numcell"><input class="mini-input" id="d-amt" type="number" min="0" step="1" inputmode="decimal" value="${coState.discMode==='amt'?(coState.discAmt||''):''}" placeholder="0"><span class="unit">${curCode()}</span></div></div>
+        <div><label class="lab" for="d-pct">Percent off</label><div class="numcell"><input class="mini-input" id="d-pct" type="text" inputmode="decimal" autocomplete="off" value="${coState.discMode==='pct'?(coState.discPct||''):''}" placeholder="0"><span class="unit">%</span></div></div>
+        <div><label class="lab" for="d-amt">or flat amount</label><div class="numcell"><input class="mini-input" id="d-amt" type="text" inputmode="decimal" autocomplete="off" value="${coState.discMode==='amt'?(coState.discAmt||''):''}" placeholder="0"><span class="unit">${curCode()}</span></div></div>
       </div><div class="help" style="margin-top:6px">Type in one box — the other clears itself.</div>`:''}
-      ${d.amt>0?`
+
+      <div id="discWarn"></div>
+
+      <div id="discExtra" hidden>
         <label class="lab" for="d-reason" style="margin-top:12px">Reason <span style="color:var(--crit)">*</span></label>
         <select class="m-input" id="d-reason"><option value="">Choose a reason…</option>${REASON_PRESETS.map(r=>`<option value="${esc(r)}" ${coState.reasonPreset===r?'selected':''}>${esc(r)}</option>`).join('')}</select>
-        ${(coState.reasonPreset==='Other (type below)'||!coState.reasonPreset)?`<input class="m-input" id="d-reasontext" style="margin-top:8px" placeholder="Type the reason (required)" value="${esc(coState.reasonText||'')}">`:''}
+        <input class="m-input" id="d-reasontext" style="margin-top:8px" placeholder="Type the reason (required)" value="${esc(coState.reasonText||'')}" hidden>
         <label class="lab" for="d-cust" style="margin-top:12px">Customer name <span class="help" style="margin:0;font-weight:400">(optional, prints on the bill)</span></label>
         <input class="m-input" id="d-cust" placeholder="e.g. Mr Sharma" value="${esc(coState.customerName||'')}">
-      `:''}
-      ${d.overCap?`<div class="warn-msg" style="margin-top:10px">⚠ ${d.pct}% is over the ${d.cap}% staff limit. An owner has to sign in to approve this.</div>`:''}
-      ${d.needsReason&&!d.overCap?`<div class="warn-msg" style="margin-top:10px">⚠ Pick or type a reason — every discount is logged for the owner.</div>`:''}
-      ${d.amt>0&&!blocked?`<div class="help" style="margin-top:10px">Logged against <b>${esc((me&&me.name)||'you')}</b> and visible in Admin → Reports.</div>`:''}
+      </div>
+
+      <div id="pinRow" hidden>
+        <label class="lab" for="d-pin" style="margin-top:12px">Manager override PIN <span style="color:var(--crit)">*</span></label>
+        <input class="m-input" id="d-pin" type="password" inputmode="numeric" autocomplete="off" placeholder="4–8 digits" value="${esc(coState.pin||'')}">
+        <div class="help">Ask an owner to enter it. Set or change it in Admin → Settings.</div>
+      </div>
+
+      <div class="help" id="discNote" style="margin-top:10px"></div>
     </div>`;
 
   return `<div class="page-head"><div><h1>Review order</h1><div class="ph-sub">Confirm with the customer, then submit.</div></div><button class="btn-ghost" data-goto="sell">${I.plus} Add more</button></div>
@@ -277,15 +327,10 @@ function viewCheckout(){
       <div class="card card-pad">
         ${otOn?`<label class="lab">Order type</label><div class="seg-inline" role="group" aria-label="Order type" style="margin-bottom:14px">${['dine-in','takeaway'].map(t=>`<button type="button" data-ot="${t}" aria-pressed="${coState.orderType===t}">${t==='dine-in'?'Dine-in':'Takeaway'}</button>`).join('')}</div>`:''}
         <label class="lab">Payment mode</label><div class="seg-inline" role="group" aria-label="Payment mode">${['Cash','UPI','Card'].map(m=>`<button type="button" data-pm="${m}" aria-pressed="${coState.paymentMode===m}">${m}</button>`).join('')}</div>
-        <div class="co-tot">
-          ${d.amt>0?`<div><span>Subtotal</span><b class="num">${money(d.gross)}</b></div><div><span>Discount (${d.pct}%)</span><b class="num" style="color:var(--warn)">−${money(d.amt)}</b></div>`:''}
-          <div><span>Taxable value</span><b class="num">${money(taxable)}</b></div>
-          <div><span>CGST @ ${rate/2}%</span><b class="num">${money(cgst)}</b></div>
-          <div><span>SGST @ ${rate/2}%</span><b class="num">${money(sgst)}</b></div>
-          <div class="co-grand"><span>Total payable</span><b class="num">${money(total)}</b></div></div>
+        <div class="co-tot" id="coTotals">${coTotalsHTML()}</div>
         <div style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <span class="help">Prices incl. GST ${rate}%${d.amt>0?' · GST charged on the discounted value':''}</span>
-          <button class="btn btn-primary" id="submitOrder" ${blocked?'disabled style="opacity:.5;cursor:not-allowed"':''}>${I.check} Submit &amp; generate bill</button>
+          <button class="btn btn-primary" id="submitOrder">${I.check} Submit &amp; generate bill</button>
         </div>
       </div>
     </div>`;
@@ -293,14 +338,15 @@ function viewCheckout(){
 async function submitOrder(){
   if(!cart.length)return;
   const d=discInfo();
-  if(d.overCap){toast(`${d.pct}% is over the ${d.cap}% staff limit — an owner must approve it`,I.issues);return;}
   if(d.needsReason){toast('A reason is required for every discount',I.issues);return;}
+  if(d.needsPin&&d.pin.length<4){toast('A manager override PIN is required for this discount',I.issues);return;}
   const payload={payment_mode:coState.paymentMode,order_type:(DB.settings.orderTypeOn!==false)?coState.orderType:null,
     customer_name:(coState.customerName||'').trim()||null,
     items:cart.map(l=>({product_id:l.pid,qty:l.qty,extras:l.extras.map(e=>e.id)}))};
   if(d.amt>0){
     payload.discount_reason=d.reason;
     if(coState.discMode==='amt') payload.discount_amount=d.amt; else payload.discount_pct=Number(coState.discPct)||0;
+    if(d.needsPin) payload.override_pin=d.pin;
   }
   const btn=document.getElementById('submitOrder'); if(btn){btn.disabled=true;btn.textContent='Submitting…';}
   const {data,error}=await sb.rpc('record_order',{p_payload:payload});
@@ -674,10 +720,11 @@ function viewReports(){
   const discRows=rows.filter(o=>o.discount>0).sort((x,y)=>y.ts-x.ts).map(o=>
     `<tr><td><b>${esc(o.invoiceNo||'-')}</b><div style="font-size:11.5px;color:var(--ink-faint)">${new Date(o.ts).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</div></td>
       <td class="r num">${money2(o.gross)}</td>
-      <td class="r"><span class="pill warn" style="font-size:10.5px">−${money2(o.discount)}${o.discountPct?` (${o.discountPct}%)`:''}</span></td>
+      <td class="r"><span class="pill ${o.overLimit?'crit':'warn'}" style="font-size:10.5px">−${money2(o.discount)}${o.discountPct?` (${o.discountPct}%)`:''}</span>${o.overLimit?'<div style="font-size:10px;color:var(--crit);margin-top:2px">OVER LIMIT</div>':''}</td>
       <td class="r num"><b>${money2(o.total)}</b></td>
       <td>${esc(o.discountBy||'—')}</td><td style="font-size:12px;color:var(--ink-soft)">${esc(o.discountReason||'—')}</td></tr>`).join('');
   const discPct=t.total+t.disc>0?(t.disc/(t.total+t.disc)*100):0;
+  const overN=rows.filter(o=>o.overLimit).length;
 
   return head+`
     <div class="grid kpi-grid" style="margin-bottom:16px">
@@ -706,7 +753,7 @@ function viewReports(){
         <tbody>${dayRows}</tbody>
         <tfoot><tr><td><b>Total</b></td><td class="r num"><b>${t.n}</b></td><td class="r num"><b>${money2(t.taxable)}</b></td><td class="r num"><b>${money2(t.cgst)}</b></td><td class="r num"><b>${money2(t.sgst)}</b></td>${t.disc>0?`<td class="r num"><b>−${money2(t.disc)}</b></td>`:''}<td class="r num"><b>${money2(t.total)}</b></td></tr></tfoot></table></div></div>
     <div class="card card-pad"><div class="section-title">Discount audit trail</div>
-      <div class="section-sub">Every discount given in this range, who gave it and why. ${t.discN?`<b>${t.discN}</b> of ${t.n} orders discounted · <b>${money2(t.disc)}</b> given away (${discPct.toFixed(1)}% of gross).`:''}</div>
+      <div class="section-sub">Every discount given in this range, who gave it and why. ${t.discN?`<b>${t.discN}</b> of ${t.n} orders discounted · <b>${money2(t.disc)}</b> given away (${discPct.toFixed(1)}% of gross).`:''}${overN?` <b style="color:var(--crit)">${overN} used a manager override</b> — worth reviewing.`:''}</div>
       <div class="tbl-wrap"><table><thead><tr><th>Invoice</th><th class="r">Before</th><th class="r">Discount</th><th class="r">Charged</th><th>Given by</th><th>Reason</th></tr></thead>
         <tbody>${discRows||'<tr><td colspan="6" class="empty">No discounts given in this range.</td></tr>'}</tbody></table></div></div>
     ${voids.length?`<div class="card card-pad" style="margin-top:16px"><div class="section-title">Cancelled invoices</div>
@@ -730,13 +777,13 @@ function reportCSV(){
   L.push([q('Period'),q(a.toLocaleDateString('en-IN')+' to '+b.toLocaleDateString('en-IN'))]);
   L.push([q('GST rate'),q(rate+'%')]);
   L.push([]);
-  L.push(['Date','Invoice No','Status','Customer','Order type','Payment mode','Gross','Discount','Discount %','Discount reason','Discount by','Taxable','CGST','SGST','Round off','Invoice total','Cancelled by','Cancel reason'].map(q));
+  L.push(['Date','Invoice No','Status','Customer','Order type','Payment mode','Gross','Discount','Discount %','Discount reason','Discount by','Over limit','Taxable','CGST','SGST','Round off','Invoice total','Cancelled by','Cancel reason'].map(q));
   rows.forEach(o=>L.push([q(new Date(o.ts).toLocaleString('en-IN')),q(o.invoiceNo),q(o.status||'active'),q(o.customerName),q(o.orderType),q(o.paymentMode),
-    o.gross.toFixed(2),o.discount.toFixed(2),o.discountPct||'',q(o.discountReason),q(o.discountBy),
+    o.gross.toFixed(2),o.discount.toFixed(2),o.discountPct||'',q(o.discountReason),q(o.discountBy),q(o.overLimit?'YES':''),
     o.taxable.toFixed(2),o.cgst.toFixed(2),o.sgst.toFixed(2),o.roundOff.toFixed(2),o.total.toFixed(2),
     q(o.cancelledBy),q(o.cancelReason)]));
   L.push([]);
-  L.push([q('TOTAL (live invoices only)'),q(''),q(''),q(''),q(''),q(''),'','','','','',t.taxable.toFixed(2),t.cgst.toFixed(2),t.sgst.toFixed(2),t.round.toFixed(2),t.total.toFixed(2)]);
+  L.push([q('TOTAL (live invoices only)'),q(''),q(''),q(''),q(''),q(''),'','','','','','',t.taxable.toFixed(2),t.cgst.toFixed(2),t.sgst.toFixed(2),t.round.toFixed(2),t.total.toFixed(2)]);
   L.push([q('Discounts given'),t.disc.toFixed(2),q(t.discN+' of '+t.n+' orders')]);
   const csv='﻿'+L.map(r=>r.join(',')).join('\r\n');
   const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
@@ -880,6 +927,17 @@ function manageSettings(){
       </div>
       <div class="help" style="margin-top:8px">Staff can discount up to the limit above; owners can go higher. Every discount is logged with who, how much and why — see <b>Reports</b>.</div>
       <div class="help" style="margin-top:8px">Invoice numbers run like <b>${esc(s.invoicePrefix||'GMW')}/2026-27/0001</b> and reset each financial year (Apr–Mar). GST 5% is standard for a standalone cafe.</div>
+      <div class="section-title" style="margin-top:20px">Manager override PIN</div>
+      <div class="section-sub">Staff need this PIN to give a discount above the limit above. Owners never need it.</div>
+      <div id="pinState" class="help" style="margin-bottom:8px">Checking…</div>
+      <div class="form-grid" style="max-width:320px">
+        <div><label class="lab" for="set-pin">New PIN (4–8 digits)</label><input class="m-input" id="set-pin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="••••"></div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+        <button class="btn-ghost" id="savePin">${I.key} Set PIN</button>
+        <button class="btn-ghost" id="clearPin">${I.trash} Remove PIN</button>
+      </div>
+      <div class="help">Stored as a one-way hash the app cannot read back. Removing it blocks over-limit discounts for staff entirely.</div>
       <button class="btn btn-primary" id="saveSettings" style="margin-top:16px">${I.check} Save settings</button>
     </div>
     <div class="card card-pad" style="max-width:540px;margin-top:16px">
@@ -907,30 +965,41 @@ function wire(){
   document.querySelectorAll('[data-crm]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.uid!==b.dataset.crm);render();});
   document.querySelectorAll('[data-ot]').forEach(b=>b.onclick=()=>{coState.orderType=b.dataset.ot;render();});
   document.querySelectorAll('[data-pm]').forEach(b=>b.onclick=()=>{coState.paymentMode=b.dataset.pm;render();});
-  // discount controls
+  // discount controls — only the preset buttons re-render (they change structure);
+  // every text field updates the panel in place so the caret is never disturbed.
   document.querySelectorAll('[data-dp]').forEach(b=>b.onclick=()=>{
     const v=b.dataset.dp;
     if(v==='custom'){coState.discCustom=true;coState.discMode='pct';coState.discPct=0;coState.discAmt=0;}
     else {coState.discCustom=false;coState.discMode='pct';coState.discPct=Number(v);coState.discAmt=0;
-      if(Number(v)===0){coState.reasonPreset='';coState.reasonText='';}}
+      if(Number(v)===0){coState.reasonPreset='';coState.reasonText='';coState.pin='';}}
     render();
     if(v==='custom'){const el=document.getElementById('d-pct');if(el)el.focus();}});
-  // re-render to update the live total, then put the caret back where it was
-  const keepCaret=(id,apply)=>{const el=document.getElementById(id);if(!el)return;
-    el.oninput=()=>{let pos=null;try{pos=el.selectionStart;}catch(e){}
-      apply(el.value); render();
-      const back=document.getElementById(id);
-      if(back){back.focus();if(pos!=null){try{back.setSelectionRange(pos,pos);}catch(e){}}}};};
-  keepCaret('d-pct',v=>{coState.discCustom=true;coState.discMode='pct';coState.discPct=parseFloat(v)||0;coState.discAmt=0;});
-  keepCaret('d-amt',v=>{coState.discCustom=true;coState.discMode='amt';coState.discAmt=parseFloat(v)||0;coState.discPct=0;});
+
+  const num=(el,apply)=>{ if(!el) return;
+    el.oninput=()=>{
+      // keep it numeric without fighting the caret
+      const clean=el.value.replace(/[^0-9.]/g,'').replace(/(\..*)\./g,'$1');
+      if(clean!==el.value){const at=el.selectionStart-(el.value.length-clean.length);el.value=clean;
+        try{el.setSelectionRange(Math.max(0,at),Math.max(0,at));}catch(e){}}
+      apply(clean); refreshDisc();
+      const other=el.id==='d-pct'?document.getElementById('d-amt'):document.getElementById('d-pct');
+      if(other&&other.value!=='') other.value='';
+    };};
+  num(document.getElementById('d-pct'),v=>{coState.discCustom=true;coState.discMode='pct';coState.discPct=parseFloat(v)||0;coState.discAmt=0;});
+  num(document.getElementById('d-amt'),v=>{coState.discCustom=true;coState.discMode='amt';coState.discAmt=parseFloat(v)||0;coState.discPct=0;});
+
   const dre=document.getElementById('d-reason');
-  if(dre) dre.onchange=()=>{coState.reasonPreset=dre.value;render();};
+  if(dre) dre.onchange=()=>{coState.reasonPreset=dre.value;refreshDisc();
+    if(coState.reasonPreset==='Other (type below)'||!coState.reasonPreset){const t=document.getElementById('d-reasontext');if(t)t.focus();}};
   const drt=document.getElementById('d-reasontext');
-  if(drt) drt.oninput=()=>{const was=coState.reasonText;coState.reasonText=drt.value;
-    // re-render only when the blocked/unblocked state actually flips
-    if((!was)!==(!drt.value.trim())){const p=drt.selectionStart;render();const el=document.getElementById('d-reasontext');if(el){el.focus();el.setSelectionRange(p,p);}}};
+  if(drt) drt.oninput=()=>{coState.reasonText=drt.value;refreshDisc();};
   const dcu=document.getElementById('d-cust');
   if(dcu) dcu.oninput=()=>{coState.customerName=dcu.value;};
+  const dpin=document.getElementById('d-pin');
+  if(dpin) dpin.oninput=()=>{coState.pin=dpin.value.replace(/[^0-9]/g,'');
+    if(dpin.value!==coState.pin) dpin.value=coState.pin;
+    refreshDisc();};
+  if(document.getElementById('discPill')) refreshDisc();
   const so=document.getElementById('submitOrder');if(so)so.onclick=submitOrder;
   // orders history
   const osrch=document.getElementById('orderSearch');if(osrch)osrch.oninput=()=>{orderQuery=osrch.value;render();const el=document.getElementById('orderSearch');if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}};
@@ -1000,6 +1069,25 @@ function wire(){
       DB.settings=mapSettings({shop_name:rec.shop_name,currency:rec.currency,legal_name:rec.legal_name,gstin:rec.gstin,address:rec.address,state:rec.state,phone:rec.phone,fssai:rec.fssai,invoice_prefix:rec.invoice_prefix,gst_rate:rec.gst_rate,order_type_on:rec.order_type_on,max_staff_discount_pct:rec.max_staff_discount_pct});
       setShopName();render();toast('Settings saved',I.check);};
   }
+  // override PIN
+  const pinState=document.getElementById('pinState');
+  if(pinState){ sb.rpc('has_override_pin').then(({data,error})=>{
+      const el=document.getElementById('pinState'); if(!el)return;
+      if(error){el.innerHTML='<span style="color:var(--crit)">Could not check — run supabase/phase4.sql.</span>';return;}
+      el.innerHTML=data?'<span style="color:var(--good)">✓ A PIN is set.</span>':'<span style="color:var(--warn)">No PIN set — staff cannot exceed the limit at all.</span>';}); }
+  const savePin=document.getElementById('savePin');
+  if(savePin) savePin.onclick=async()=>{
+    const v=(document.getElementById('set-pin').value||'').trim();
+    if(!/^[0-9]{4,8}$/.test(v)){toast('The PIN must be 4 to 8 digits',I.issues);return;}
+    const {error}=await sb.rpc('set_override_pin',{p_pin:v});
+    if(error){toast(error.message||'Could not set the PIN',I.issues);return;}
+    document.getElementById('set-pin').value=''; render(); toast('Override PIN set',I.check);};
+  const clearPin=document.getElementById('clearPin');
+  if(clearPin) clearPin.onclick=()=>confirmModal('Remove the override PIN?','Staff will not be able to give any discount above the limit until a new PIN is set.','Remove',async()=>{
+    const {error}=await sb.rpc('set_override_pin',{p_pin:''});
+    if(error){toast(error.message||'Could not remove the PIN',I.issues);return;}
+    render(); toast('Override PIN removed',I.trash);},true);
+
   const exBtn=document.getElementById('exportCfg');if(exBtn)exBtn.onclick=exportConfig;
   const imBtn=document.getElementById('importCfg');if(imBtn)imBtn.onclick=importConfigModal;
 
