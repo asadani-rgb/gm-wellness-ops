@@ -21,7 +21,10 @@ const I = {
   shield:'<svg viewBox="0 0 24 24" fill="none"><path d="M12 3 5 5.6v5c0 4.3 3 7.4 7 8.6 4-1.2 7-4.3 7-8.6v-5L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
   bean:'<svg viewBox="0 0 24 24" fill="none"><ellipse cx="12" cy="12" rx="7.5" ry="9" transform="rotate(35 12 12)" stroke="currentColor" stroke-width="1.6"/><path d="M8 8c3 2 5 5 8 8" stroke="currentColor" stroke-width="1.5"/></svg>',
   download:'<svg viewBox="0 0 24 24" fill="none"><path d="M12 4v10m0 0 4-4m-4 4-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
-  upload:'<svg viewBox="0 0 24 24" fill="none"><path d="M12 20V10m0 0 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'
+  upload:'<svg viewBox="0 0 24 24" fill="none"><path d="M12 20V10m0 0 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+  receipt:'<svg viewBox="0 0 24 24" fill="none"><path d="M6 3h12v18l-2.5-1.5L13 21l-2.5-1.5L8 21l-2-1.5V3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 8h6M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+  cart:'<svg viewBox="0 0 24 24" fill="none"><path d="M3 4h2l2.2 11.2a1.5 1.5 0 0 0 1.5 1.2h8.1a1.5 1.5 0 0 0 1.5-1.2L21 8H6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9.5" cy="20" r="1.3" fill="currentColor"/><circle cx="17.5" cy="20" r="1.3" fill="currentColor"/></svg>',
+  minus:'<svg viewBox="0 0 24 24" fill="none"><path d="M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>'
 };
 
 /* ============================ SUPABASE CLIENT ============================ */
@@ -32,26 +35,42 @@ function mapIngredient(r){return {id:r.id,name:r.name,cat:r.category,unit:r.unit
 function mapProduct(r){return {id:r.id,name:r.name,price:Number(r.price),recipe:(r.recipe_items||[]).map(ri=>[ri.ingredient_id,Number(ri.qty)])};}
 
 /* ============================ STATE ============================ */
-let DB={ingredients:[],products:[],sales:[],issues:[],users:[],settings:{shopName:'GM Wellness',currency:'INR'}};
+const DEF_SETTINGS={shopName:'GM Wellness',currency:'INR',legalName:'',gstin:'',address:'',state:'',phone:'',fssai:'',invoicePrefix:'GMW',gstRate:5,orderTypeOn:true};
+let DB={ingredients:[],products:[],extras:[],orders:[],orderItems:[],issues:[],users:[],settings:{...DEF_SETTINGS}};
 let me=null, view='sell', lastSale=null, toastTimer=null, manageTab='supplies';
+let cart=[]; // [{uid, pid, name, price, qty, extras:[{id,name,price}]}]
+let coState={orderType:'dine-in',paymentMode:'Cash'};
+
+function mapSettings(d){ return d? {shopName:d.shop_name,currency:d.currency,legalName:d.legal_name||'',gstin:d.gstin||'',address:d.address||'',state:d.state||'',phone:d.phone||'',fssai:d.fssai||'',invoicePrefix:d.invoice_prefix||'GMW',gstRate:d.gst_rate!=null?Number(d.gst_rate):5,orderTypeOn:d.order_type_on!==false} : {...DEF_SETTINGS}; }
 
 async function loadAll(){
   const since=new Date(Date.now()-14*86400000).toISOString();
-  const [ings,prods,setts,users,sales,issues]=await Promise.all([
+  const [ings,prods,setts,users,issues,extras,eprods,orders]=await Promise.all([
     sb.from('ingredients').select('*').order('name'),
     sb.from('products').select('*, recipe_items(ingredient_id, qty)').order('name'),
     sb.from('shop_settings').select('*').eq('id',1).maybeSingle(),
     sb.from('profiles').select('*').order('created_at'),
-    sb.from('sales').select('id, product_id, price, created_at').gte('created_at',since).order('created_at',{ascending:false}),
-    sb.from('issues').select('id, ingredient_id, amount, mode, reason, created_at, profiles(name)').order('created_at',{ascending:false}).limit(50)
+    sb.from('issues').select('id, ingredient_id, amount, mode, reason, created_at, profiles(name)').order('created_at',{ascending:false}).limit(50),
+    sb.from('extras').select('*').order('name'),
+    sb.from('extra_products').select('*'),
+    sb.from('orders').select('*, order_items(*)').gte('created_at',since).order('created_at',{ascending:false})
   ]);
   if(ings.data) DB.ingredients=ings.data.map(mapIngredient);
   if(prods.data) DB.products=prods.data.map(mapProduct);
-  DB.settings=setts.data?{shopName:setts.data.shop_name,currency:setts.data.currency}:{shopName:'GM Wellness',currency:'INR'};
+  DB.settings=mapSettings(setts.data);
   if(users.data) DB.users=users.data.map(u=>({id:u.id,name:u.name,email:u.email,role:u.role}));
-  if(sales.data) DB.sales=sales.data.map(x=>({id:x.id,pid:x.product_id,price:Number(x.price),ts:new Date(x.created_at).getTime()}));
   if(issues.data) DB.issues=issues.data.map(i=>({id:i.id,ing:i.ingredient_id,amount:Number(i.amount),mode:i.mode,reason:i.reason,by:(i.profiles&&i.profiles.name)||'—',ts:new Date(i.created_at).getTime()}));
+  if(extras.data){
+    const map={}; (eprods.data||[]).forEach(m=>{(map[m.extra_id]=map[m.extra_id]||[]).push(m.product_id);});
+    DB.extras=extras.data.map(e=>({id:e.id,name:e.name,price:Number(e.price),ingredientId:e.ingredient_id,qty:Number(e.qty),active:e.active,products:map[e.id]||[]}));
+  }
+  if(orders.data){
+    DB.orders=orders.data.map(o=>({id:o.id,invoiceNo:o.invoice_no,gross:Number(o.gross),taxable:Number(o.taxable),cgst:Number(o.cgst),sgst:Number(o.sgst),tax:Number(o.tax),roundOff:Number(o.round_off),total:Number(o.total),paymentMode:o.payment_mode,orderType:o.order_type,ts:new Date(o.created_at).getTime(),
+      items:(o.order_items||[]).map(li=>({id:li.id,pid:li.product_id,name:li.product_name,qty:li.qty,unitPrice:Number(li.unit_price),extras:li.extras||[],lineTotal:Number(li.line_total)}))}));
+    DB.orderItems=[]; DB.orders.forEach(o=>o.items.forEach(li=>DB.orderItems.push({pid:li.pid,name:li.name,qty:li.qty,lineTotal:li.lineTotal,ts:o.ts})));
+  }
 }
+const extrasFor=pid=>DB.extras.filter(e=>e.active&&e.products.includes(pid));
 
 /* ============================ HELPERS ============================ */
 const ing=id=>DB.ingredients.find(x=>x.id===id);
@@ -84,6 +103,7 @@ const adminCount=()=>DB.users.filter(u=>u.role==='admin').length;
 /* ============================ NAV ============================ */
 const NAV=[
   {id:'sell',label:'Sell',icon:I.sell,roles:['admin','staff']},
+  {id:'orders',label:'Orders',icon:I.receipt,roles:['admin','staff']},
   {id:'stock',label:'Stock',icon:I.stock,roles:['admin','staff']},
   {id:'issues',label:'Issues',icon:I.issues,roles:['admin','staff']},
   {id:'analytics',label:'Analytics',icon:I.analytics,roles:['admin']},
@@ -101,40 +121,193 @@ async function go(v){view=v;renderNav();render();window.scrollTo({top:0,behavior
 /* ============================ RENDER ============================ */
 function render(){
   const el=document.getElementById('view');
-  const map={sell:viewSell,stock:viewStock,issues:viewIssues,analytics:viewAnalytics,manage:viewManage};
+  const map={sell:viewSell,checkout:viewCheckout,orders:viewOrders,stock:viewStock,issues:viewIssues,analytics:viewAnalytics,manage:viewManage};
   el.innerHTML=(map[view]||viewSell)();
   wire();
 }
 
-/* ---------- SELL ---------- */
+/* ---------- SELL (cart) ---------- */
+function cartCount(){return cart.reduce((a,l)=>a+l.qty,0);}
+function lineGross(l){return (l.price+l.extras.reduce((s,e)=>s+e.price,0))*l.qty;}
+function cartTotal(){return cart.reduce((a,l)=>a+lineGross(l),0);}
+function cartBar(){ if(!cart.length) return ''; return `<div class="cartbar"><div class="cb-info">${I.cart}<span><b>${cartCount()}</b> item${cartCount()>1?'s':''} · ${money(cartTotal())}</span></div><button class="btn btn-primary" data-goto="checkout">Review order →</button></div>`; }
 function viewSell(){
   const lowItems=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').sort((a,b)=>ratio(a)-ratio(b));
-  const lowCount=lowItems.length;
-  const lowNames=lowItems.map(x=>x.name);
+  const lowCount=lowItems.length; const lowNames=lowItems.map(x=>x.name);
   const cards=DB.products.map(p=>{
     const {cups,limitId}=cupCapacity(p); const lim=ing(limitId);
     const rq=limitId?p.recipe.find(r=>r[0]===limitId)[1]:1;
     const target=lim?Math.max(cups,Math.floor(lim.par/rq)):cups;
     const pct=target?Math.round(cups/target*100):0;
     const s=cups<8?'crit':cups<20?'warn':(pct<40?'warn':'good');
-    const disabled=cups<=0;
-    return `<div class="card prod ${disabled?'out':''}" data-prod="${p.id}">
-      <div class="soldflash">${I.check} Sold</div>
+    const disabled=cups<=0; const nEx=extrasFor(p.id).length;
+    return `<div class="card prod ${disabled?'out':''}">
       <div class="p-top"><h3>${esc(p.name)}</h3><span class="price">${money(p.price)}</span></div>
       <div class="cups"><b class="num">${cups}</b> cups can be made</div>
       <div class="bar ${s}"><i style="width:${Math.max(disabled?0:4,pct)}%"></i></div>
-      <div class="limit">${disabled?'Out of stock':(lim?('Limited by '+esc(lim.name)):'')}</div>
-      <div class="sell-row"><button class="btn-sell" data-sell="${p.id}" ${disabled?'disabled':''}>${I.sell} Sell one</button></div>
+      <div class="limit">${disabled?'Out of stock':(lim?('Limited by '+esc(lim.name)):(nEx?`${nEx} extra${nEx>1?'s':''} available`:''))}</div>
+      <div class="sell-row"><button class="btn-sell" data-add="${p.id}" ${disabled?'disabled':''}>${I.plus} Add to order</button></div>
     </div>`;
   }).join('');
-  const DAY=86400000, recent=[...DB.sales].filter(s=>s.ts>Date.now()-DAY).sort((a,b)=>b.ts-a.ts).slice(0,40);
-  const pname=id=>{const p=DB.products.find(x=>x.id===id);return p?p.name:'Coffee';};
-  const recentHtml=recent.length?recent.map(s=>`<div class="rs-row"><div class="rs-what"><b>${esc(pname(s.pid))}</b> · ${money(s.price)}</div><div class="rs-right"><span class="rs-time">${timeAgo(s.ts)}</span><button class="btn-ghost btn-mini" data-reverse="${s.id}">${I.undo} Reverse</button></div></div>`).join(''):'<div class="empty" style="padding:22px 12px">No sales in the last 24 hours.</div>';
   return `<div class="page-head">
-      <div><h1>Sell coffee</h1><div class="ph-sub">Tap a coffee to record a sale. Stock updates instantly.</div></div>
+      <div><h1>Sell coffee</h1><div class="ph-sub">Add drinks &amp; extras to the order, then review with the customer.</div></div>
       ${lowCount?`<button class="pill warn" data-goto="stock" data-tip="Tap to open Stock. Needs restock: ${esc(lowNames.join(', '))}" style="border:none;cursor:pointer;text-align:left;max-width:100%;white-space:normal">${I.issues} Restock: ${esc(lowNames.slice(0,3).join(', '))}${lowNames.length>3?` +${lowNames.length-3} more`:''}</button>`:`<span class="pill good">${I.check} All stock healthy</span>`}
-    </div><div class="grid sell-grid">${cards}</div>
-    <details class="rs"><summary><span>Recent sales · reverse within 24 h</span><span class="rs-count">${recent.length}</span></summary><div class="rs-body">${recentHtml}</div></details>`;
+    </div><div class="grid sell-grid">${cards}</div>${cartBar()}`;
+}
+function openAddModal(pid){
+  const p=DB.products.find(x=>x.id===pid); if(!p)return;
+  const exs=extrasFor(pid); let qty=1; const sel={};
+  const root=document.getElementById('modalRoot');
+  const lineTot=()=>{let ex=0;exs.forEach(e=>{if(sel[e.id])ex+=e.price;});return (p.price+ex)*qty;};
+  function draw(){
+    root.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="Add ${esc(p.name)}">
+      <div class="modal-head"><h3>${esc(p.name)}</h3><button class="icon-btn" id="mx">${I.close}</button></div>
+      <div class="modal-body">
+        <div class="addrow"><span>Quantity</span><div class="qty"><button class="icon-btn" id="qminus" aria-label="Decrease">${I.minus}</button><b id="qval">${qty}</b><button class="icon-btn" id="qplus" aria-label="Increase">${I.plus}</button></div></div>
+        ${exs.length?`<div class="lab" style="margin-top:16px">Extras</div>${exs.map(e=>`<label class="exrow"><span><input type="checkbox" data-ex="${e.id}" ${sel[e.id]?'checked':''}> ${esc(e.name)}</span><span class="expr ${e.price>0?'':'free'}">${e.price>0?('+ '+money(e.price)):'Free'}</span></label>`).join('')}`:'<div class="help" style="margin-top:14px">No extras configured for this drink.</div>'}
+      </div>
+      <div class="modal-foot"><button class="btn-ghost" id="mcancel">Cancel</button><button class="btn btn-primary" id="madd">${I.cart} Add · <span id="mlt">${money(lineTot())}</span></button></div>
+    </div></div>`;
+    const close=()=>root.innerHTML='';
+    document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
+    document.getElementById('mx').onclick=close; document.getElementById('mcancel').onclick=close;
+    document.getElementById('qminus').onclick=()=>{if(qty>1){qty--;draw();}};
+    document.getElementById('qplus').onclick=()=>{qty++;draw();};
+    root.querySelectorAll('[data-ex]').forEach(cb=>cb.onchange=()=>{sel[cb.dataset.ex]=cb.checked;document.getElementById('mlt').textContent=money(lineTot());});
+    document.getElementById('madd').onclick=()=>{
+      const chosen=exs.filter(e=>sel[e.id]).map(e=>({id:e.id,name:e.name,price:e.price}));
+      cart.push({uid:'c'+Date.now()+Math.random().toString(36).slice(2,6),pid:p.id,name:p.name,price:p.price,qty,extras:chosen});
+      close(); render(); toast(`Added ${qty}× ${p.name}`,I.cart);
+    };
+  }
+  draw();
+}
+
+/* ---------- CHECKOUT ---------- */
+function viewCheckout(){
+  if(!cart.length) return `<div class="page-head"><div><h1>Review order</h1></div></div><div class="card card-pad"><div class="empty">${I.cart}<div>Your order is empty.</div></div><div style="text-align:center;margin-top:8px"><button class="btn btn-primary" data-goto="sell">Back to Sell</button></div></div>`;
+  const rows=cart.map(l=>`<div class="co-row"><div class="co-main"><b>${esc(l.name)}</b>${l.extras.length?`<div class="co-ex">+ ${l.extras.map(e=>esc(e.name)+(e.price>0?` (${money(e.price)})`:'')).join(', ')}</div>`:''}</div>
+      <div class="qty"><button class="icon-btn" data-cq="-" data-uid="${l.uid}" aria-label="Decrease">${I.minus}</button><b>${l.qty}</b><button class="icon-btn" data-cq="+" data-uid="${l.uid}" aria-label="Increase">${I.plus}</button></div>
+      <div class="co-amt num">${money(lineGross(l))}</div>
+      <button class="icon-btn" data-crm="${l.uid}" aria-label="Remove" style="width:32px;height:32px">${I.trash}</button></div>`).join('');
+  const gross=cartTotal(), rate=DB.settings.gstRate||5, total=Math.round(gross);
+  const taxable=+(total/(1+rate/100)).toFixed(2), tax=+(total-taxable).toFixed(2), cgst=+(tax/2).toFixed(2), sgst=+(tax-cgst).toFixed(2);
+  const otOn=DB.settings.orderTypeOn!==false;
+  return `<div class="page-head"><div><h1>Review order</h1><div class="ph-sub">Confirm with the customer, then submit.</div></div><button class="btn-ghost" data-goto="sell">${I.plus} Add more</button></div>
+    <div class="grid two-col">
+      <div class="card card-pad"><div class="section-title">Items · ${cartCount()}</div><div style="margin-top:8px">${rows}</div></div>
+      <div class="card card-pad">
+        ${otOn?`<label class="lab">Order type</label><div class="seg-inline" role="group" aria-label="Order type" style="margin-bottom:14px">${['dine-in','takeaway'].map(t=>`<button type="button" data-ot="${t}" aria-pressed="${coState.orderType===t}">${t==='dine-in'?'Dine-in':'Takeaway'}</button>`).join('')}</div>`:''}
+        <label class="lab">Payment mode</label><div class="seg-inline" role="group" aria-label="Payment mode">${['Cash','UPI','Card'].map(m=>`<button type="button" data-pm="${m}" aria-pressed="${coState.paymentMode===m}">${m}</button>`).join('')}</div>
+        <div class="co-tot"><div><span>Taxable value</span><b class="num">${money(taxable)}</b></div><div><span>CGST @ ${rate/2}%</span><b class="num">${money(cgst)}</b></div><div><span>SGST @ ${rate/2}%</span><b class="num">${money(sgst)}</b></div><div class="co-grand"><span>Total payable</span><b class="num">${money(total)}</b></div></div>
+        <button class="btn btn-primary btn-block" id="submitOrder" style="margin-top:16px">${I.check} Submit &amp; generate bill</button>
+        <div class="help" style="text-align:center;margin-top:8px">Prices are GST-inclusive · GST ${rate}%</div>
+      </div>
+    </div>`;
+}
+async function submitOrder(){
+  if(!cart.length)return;
+  const payload={payment_mode:coState.paymentMode,order_type:(DB.settings.orderTypeOn!==false)?coState.orderType:null,
+    items:cart.map(l=>({product_id:l.pid,qty:l.qty,extras:l.extras.map(e=>e.id)}))};
+  const btn=document.getElementById('submitOrder'); if(btn){btn.disabled=true;btn.textContent='Submitting…';}
+  const {data,error}=await sb.rpc('record_order',{p_payload:payload});
+  if(error){if(btn){btn.disabled=false;btn.innerHTML=I.check+' Submit &amp; generate bill';}toast(error.message||'Could not submit order',I.issues);return;}
+  cart=[]; await loadAll();
+  const ord=DB.orders.find(o=>o.id===data);
+  view='sell'; renderNav(); render();
+  if(ord) showReceipt(ord); else toast('Order recorded',I.check);
+}
+
+/* ---------- RECEIPT ---------- */
+function receiptHTML(o){
+  const s=DB.settings, rate=s.gstRate||5;
+  const lines=o.items.map(li=>{
+    const exLine=(li.extras&&li.extras.length)?`<div class="rc-ex">+ ${li.extras.map(e=>esc(e.name)+(Number(e.price)>0?` (${money(e.price)})`:'')).join(', ')}</div>`:'';
+    return `<tr><td>${esc(li.name)}${exLine}</td><td class="r num">${li.qty}</td><td class="r num">${money(li.unitPrice)}</td><td class="r num">${money(li.lineTotal)}</td></tr>`;}).join('');
+  const dt=new Date(o.ts);
+  return `<div id="receiptDoc" class="receipt">
+    <div class="rc-head">
+      <div class="rc-shop">${esc(s.legalName||s.shopName||'GM Wellness')}</div>
+      ${s.address?`<div class="rc-line">${esc(s.address)}</div>`:''}
+      ${s.state?`<div class="rc-line">${esc(s.state)}</div>`:''}
+      ${s.phone?`<div class="rc-line">Ph: ${esc(s.phone)}</div>`:''}
+      ${s.gstin?`<div class="rc-line"><b>GSTIN:</b> ${esc(s.gstin)}</div>`:'<div class="rc-line" style="color:#b00">Set GSTIN in Admin → Settings</div>'}
+      ${s.fssai?`<div class="rc-line">FSSAI: ${esc(s.fssai)}</div>`:''}
+    </div>
+    <div class="rc-title">TAX INVOICE</div>
+    <div class="rc-meta"><span>${esc(o.invoiceNo||'-')}</span><span>${dt.toLocaleDateString('en-IN')} ${dt.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span></div>
+    <div class="rc-meta"><span>${o.orderType?('Type: '+o.orderType):''}</span><span>${o.paymentMode?('Paid: '+o.paymentMode):''}</span></div>
+    <table class="rc-tbl"><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead><tbody>${lines}</tbody></table>
+    <div class="rc-tot">
+      <div><span>Taxable value</span><b class="num">${money(o.taxable)}</b></div>
+      <div><span>CGST @ ${rate/2}%</span><b class="num">${money(o.cgst)}</b></div>
+      <div><span>SGST @ ${rate/2}%</span><b class="num">${money(o.sgst)}</b></div>
+      ${Math.abs(o.roundOff)>=0.005?`<div><span>Round off</span><b class="num">${money(o.roundOff)}</b></div>`:''}
+      <div class="rc-grand"><span>Total</span><b class="num">${money(o.total)}</b></div>
+    </div>
+    <div class="rc-foot">SAC 9963 · Prices inclusive of GST @ ${rate}%<br>Thank you &amp; see you again!</div>
+  </div>`;
+}
+function showReceipt(o){
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="Receipt">
+    <div class="modal-body" style="padding:16px">${receiptHTML(o)}</div>
+    <div class="modal-foot"><button class="btn-ghost" id="rcClose">Close</button><button class="btn-ghost" id="rcPdf">${I.download} PDF</button><button class="btn btn-primary" id="rcPrint">${I.receipt} Print / Save PDF</button></div>
+  </div></div>`;
+  const close=()=>root.innerHTML='';
+  document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
+  document.getElementById('rcClose').onclick=close;
+  document.getElementById('rcPrint').onclick=()=>window.print();
+  document.getElementById('rcPdf').onclick=()=>downloadReceiptPDF(o);
+}
+function downloadReceiptPDF(o){
+  try{
+    const s=DB.settings, rate=s.gstRate||5; const jsPDF=window.jspdf&&window.jspdf.jsPDF;
+    if(!jsPDF){window.print();return;}
+    const M=n=>curCode()==='INR'?('Rs '+Math.round(n).toLocaleString('en-IN')):money(n);
+    const doc=new jsPDF({unit:'pt',format:[300,600]}); let y=28; const L=16, R=284;
+    const line=(t,opt={})=>{doc.setFont('helvetica',opt.b?'bold':'normal');doc.setFontSize(opt.s||10);doc.text(String(t),opt.c?150:(opt.right?R:L),y,{align:opt.c?'center':(opt.right?'right':'left')});y+=(opt.s||10)+4;};
+    const rowLR=(l,r,b)=>{doc.setFont('helvetica',b?'bold':'normal');doc.setFontSize(10);doc.text(String(l),L,y);doc.text(String(r),R,y,{align:'right'});y+=15;};
+    doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(s.legalName||s.shopName||'GM Wellness',150,y,{align:'center'});y+=18;
+    if(s.address){line(s.address,{c:true,s:8});} if(s.state){line(s.state,{c:true,s:8});}
+    if(s.gstin){line('GSTIN: '+s.gstin,{c:true,s:8});} if(s.fssai){line('FSSAI: '+s.fssai,{c:true,s:8});}
+    y+=4; line('TAX INVOICE',{c:true,b:true,s:11});
+    const dt=new Date(o.ts); rowLR(o.invoiceNo||'-', dt.toLocaleDateString('en-IN'));
+    rowLR((o.orderType||''),(o.paymentMode?('Paid: '+o.paymentMode):''));
+    y+=2; doc.setLineWidth(0.5); doc.line(L,y,R,y); y+=14;
+    rowLR('Item','Amt',true);
+    o.items.forEach(li=>{ rowLR(li.qty+'x '+li.name, M(li.lineTotal));
+      if(li.extras&&li.extras.length){doc.setFontSize(8);doc.setFont('helvetica','italic');doc.text('+ '+li.extras.map(e=>e.name).join(', '),L+8,y);y+=12;doc.setFont('helvetica','normal');}});
+    y+=2; doc.line(L,y,R,y); y+=14;
+    rowLR('Taxable', M(o.taxable)); rowLR('CGST @'+(rate/2)+'%', M(o.cgst)); rowLR('SGST @'+(rate/2)+'%', M(o.sgst));
+    if(Math.abs(o.roundOff)>=0.005) rowLR('Round off', M(o.roundOff));
+    rowLR('TOTAL', M(o.total), true);
+    y+=6; line('SAC 9963 · incl. GST '+rate+'%',{c:true,s:8}); line('Thank you & see you again!',{c:true,s:9});
+    doc.save((o.invoiceNo||'receipt').replace(/[\\/]/g,'-')+'.pdf');
+  }catch(e){window.print();}
+}
+
+/* ---------- ORDERS (history) ---------- */
+let orderQuery='';
+function viewOrders(){
+  const DAY=86400000, now=Date.now();
+  const q=orderQuery.trim().toLowerCase();
+  const list=DB.orders.filter(o=>!q||(o.invoiceNo||'').toLowerCase().includes(q)||o.items.some(li=>li.name.toLowerCase().includes(q)));
+  const rows=list.map(o=>{
+    const canRev=me.role==='admin'||o.ts>now-DAY;
+    const items=o.items.map(li=>`${li.qty}× ${esc(li.name)}`).join(', ');
+    return `<tr><td><b>${esc(o.invoiceNo||'-')}</b><div style="font-size:11.5px;color:var(--ink-faint)">${esc(items)}</div></td>
+      <td style="font-size:12.5px;color:var(--ink-soft);white-space:nowrap">${timeAgo(o.ts)}</td>
+      <td class="r"><span class="pill neutral" style="font-size:10.5px">${esc(o.paymentMode||'-')}</span></td>
+      <td class="r num"><b>${money(o.total)}</b></td>
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button><button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>${I.undo} Reverse</button></div></td></tr>`;
+  }).join('');
+  const rev14=DB.orders.reduce((a,o)=>a+o.total,0);
+  return `<div class="page-head"><div><h1>Orders</h1><div class="ph-sub">Last 14 days · ${DB.orders.length} orders · ${money(rev14)}</div></div></div>
+    <div class="card card-pad" style="margin-bottom:14px"><input class="m-input" id="orderSearch" placeholder="Search invoice number or item…" value="${esc(orderQuery)}"></div>
+    <div class="card"><div class="tbl-wrap"><table><thead><tr><th>Invoice &amp; items</th><th>When</th><th class="r">Paid</th><th class="r">Total</th><th class="r">Actions</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="5" class="empty">No orders yet.</td></tr>'}</tbody></table></div></div>
+    <p class="help" style="margin-top:12px">Open any bill to reprint. Reverse restores stock &amp; removes the order (within 24 h for staff; anytime for admins).</p>`;
 }
 
 /* ---------- STOCK ---------- */
@@ -190,17 +363,19 @@ function viewIssues(){
 
 /* ---------- ANALYTICS ---------- */
 function viewAnalytics(){
-  const DAY=86400000,now=Date.now(),from=now-14*DAY;
-  const recent=DB.sales.filter(s=>s.ts>=from);
-  const totalRev=recent.reduce((a,s)=>a+s.price,0),totalCups=recent.length,aov=totalCups?totalRev/totalCups:0;
+  const DAY=86400000,now=Date.now();
+  const items=DB.orderItems;
+  const totalCups=items.reduce((a,i)=>a+i.qty,0);
+  const totalRev=DB.orders.reduce((a,o)=>a+o.total,0);
+  const ordersCount=DB.orders.length;
+  const aov=ordersCount?totalRev/ordersCount:0;
   const lowItems=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').sort((a,b)=>ratio(a)-ratio(b));
   const lowCount=lowItems.length; const lowNames=lowItems.map(x=>x.name);
-  const byP={}; DB.products.forEach(p=>byP[p.id]={name:p.name,cups:0,rev:0});
-  recent.forEach(s=>{if(byP[s.pid]){byP[s.pid].cups++;byP[s.pid].rev+=s.price;}});
+  const byP={}; items.forEach(i=>{if(!byP[i.pid])byP[i.pid]={name:i.name,cups:0};byP[i.pid].cups+=i.qty;});
   const prodArr=Object.values(byP).sort((a,b)=>b.cups-a.cups); const maxCups=Math.max(1,...prodArr.map(p=>p.cups)); const top=prodArr[0];
   const hbars=prodArr.map(p=>`<div class="hbar"><span class="hl">${esc(p.name)}</span><span class="htrack"><i style="width:${Math.round(p.cups/maxCups*100)}%"></i></span><span class="hv num">${p.cups}</span></div>`).join('');
   const days=[]; for(let d=13;d>=0;d--){const st=new Date(now-d*DAY);st.setHours(0,0,0,0);const en=st.getTime()+DAY;
-    days.push({cups:DB.sales.filter(s=>s.ts>=st.getTime()&&s.ts<en).length,lab:new Date(st).toLocaleDateString('en-AE',{weekday:'short'}).slice(0,2),today:d===0});}
+    days.push({cups:items.filter(i=>i.ts>=st.getTime()&&i.ts<en).reduce((a,i)=>a+i.qty,0),lab:new Date(st).toLocaleDateString('en-IN',{weekday:'short'}).slice(0,2),today:d===0});}
   const maxDay=Math.max(1,...days.map(d=>d.cups));
   const cols=days.map(d=>`<div class="col ${d.today?'today':''}" data-tip="${d.lab}: ${d.cups} cups"><div class="cbar" style="height:${Math.max(3,Math.round(d.cups/maxDay*120))}px"></div><div class="clab">${d.lab}</div></div>`).join('');
   const emptyChart=`<div class="empty">${I.analytics}<div>No sales in the last 14 days yet.<br>Record sales on the Sell screen and they'll appear here.</div></div>`;
@@ -209,8 +384,8 @@ function viewAnalytics(){
     return `<div class="hbar"><span class="hl">${esc(x.name)}</span><span class="htrack"><i style="width:${Math.max(3,Math.round(r*100))}%;background:var(--${s})"></i></span><span class="hv num" style="color:var(--${s})">${coffeesLeft(x)}</span></div>`;}).join('');
   return `<div class="page-head"><div><h1>Analytics</h1><div class="ph-sub">Sales and stock over the last 14 days.</div></div><span class="pill neutral">Last 14 days</span></div>
     <div class="grid kpi-grid" style="margin-bottom:16px">
-      <div class="card kpi"><div class="k-lab">${I.analytics} Revenue</div><div class="k-val">${money(totalRev)}</div><div class="k-sub">${totalCups} cups sold</div></div>
-      <div class="card kpi"><div class="k-lab">${I.sell} Avg. order</div><div class="k-val">${money(aov)}</div><div class="k-sub">per cup</div></div>
+      <div class="card kpi"><div class="k-lab">${I.analytics} Revenue</div><div class="k-val">${money(totalRev)}</div><div class="k-sub">${ordersCount} orders · ${totalCups} cups</div></div>
+      <div class="card kpi"><div class="k-lab">${I.sell} Avg. order</div><div class="k-val">${money(aov)}</div><div class="k-sub">per order</div></div>
       <div class="card kpi"><div class="k-lab">${I.bean} Top seller</div><div class="k-val" style="font-size:26px">${top?esc(top.name):'—'}</div><div class="k-sub">${top?top.cups+' cups':''}</div></div>
       <button class="card kpi" data-goto="stock" data-tip="${lowCount?('Needs restock: '+esc(lowNames.join(', '))):'All items healthy'}" style="border:1px solid var(--line);text-align:left;cursor:pointer;font:inherit"><div class="k-lab">${I.stock} Needs restock</div><div class="k-val" style="color:${lowCount?'var(--warn)':'var(--good)'}">${lowCount}</div><div class="k-sub">${lowCount?esc(lowNames.slice(0,2).join(', '))+(lowNames.length>2?` +${lowNames.length-2} more`:''):'all healthy'}</div></button>
     </div>
@@ -223,10 +398,10 @@ function viewAnalytics(){
 
 /* ---------- ADMIN (Manage) ---------- */
 function viewManage(){
-  const tabs=[['supplies','Supplies'],['coffees','Coffees'],['team','Team'],['settings','Settings']];
-  return `<div class="page-head"><div><h1>Admin</h1><div class="ph-sub">Set up your coffees, supplies, team and shop settings.</div></div>
+  const tabs=[['supplies','Supplies'],['coffees','Coffees'],['extras','Extras'],['team','Team'],['settings','Settings']];
+  return `<div class="page-head"><div><h1>Admin</h1><div class="ph-sub">Set up your coffees, supplies, extras, team and shop settings.</div></div>
     <div class="seg" role="tablist">${tabs.map(([k,l])=>`<button role="tab" data-mtab="${k}" aria-selected="${manageTab===k}">${l}</button>`).join('')}</div></div>
-    ${manageTab==='supplies'?manageSupplies():manageTab==='coffees'?manageCoffees():manageTab==='team'?manageTeam():manageSettings()}`;
+    ${manageTab==='supplies'?manageSupplies():manageTab==='coffees'?manageCoffees():manageTab==='extras'?manageExtras():manageTab==='team'?manageTeam():manageSettings()}`;
 }
 function manageSupplies(){
   const rows=DB.ingredients.map(x=>{const s=statusOf(ratio(x));
@@ -263,6 +438,49 @@ function manageCoffees(){
     <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn-ghost" id="addCoffee">${I.plus} Add coffee</button>
       <span class="help" style="margin:auto 0">A recipe lists how much of each supply one cup uses — that's what draws stock down on each sale.</span></div>`;
 }
+function manageExtras(){
+  const drinkName=id=>{const p=DB.products.find(x=>x.id===id);return p?p.name:'?';};
+  const rows=DB.extras.map(e=>{const ig=ing(e.ingredientId);
+    const applies=e.products.length?e.products.map(drinkName).join(', '):'— (not offered on any drink)';
+    return `<tr><td><b>${esc(e.name)}</b>${e.active?'':' <span class="pill neutral" style="font-size:10px">off</span>'}</td>
+      <td class="r">${e.price>0?money(e.price):'<span class="st good" style="font-weight:600">Free</span>'}</td>
+      <td style="font-size:12.5px">${ig?esc(ig.name):'—'} · ${e.qty}${ig?ig.unit:''}</td>
+      <td style="font-size:12px;color:var(--ink-soft)">${esc(applies)}</td>
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-editextra="${e.id}">Edit</button><button class="btn-ghost btn-mini" data-delextra="${e.id}" style="padding:6px 8px">${I.trash}</button></div></td></tr>`;}).join('');
+  return `<div class="card"><div class="tbl-wrap"><table>
+      <thead><tr><th>Extra</th><th class="r">Price</th><th>Consumes</th><th>Offered on</th><th class="r">Edit</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="5" class="empty">No extras yet — add one below.</td></tr>'}</tbody></table></div></div>
+    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center"><button class="btn-ghost" id="addExtra">${I.plus} Add extra</button>
+      <span class="help">Each extra draws down a supply (keeps stock accurate) and is Free or chargeable. Pick which drinks it's offered on.</span></div>`;
+}
+function extraModal(existing){
+  const e=existing||{name:'',price:0,ingredientId:(DB.ingredients[0]||{}).id,qty:0,active:true,products:[]};
+  const ingOpts=DB.ingredients.map(i=>`<option value="${i.id}" ${i.id===e.ingredientId?'selected':''}>${esc(i.name)} (${i.unit})</option>`).join('');
+  const prodChecks=DB.products.map(p=>`<label class="exrow"><span><input type="checkbox" data-xp="${p.id}" ${e.products&&e.products.includes(p.id)?'checked':''}> ${esc(p.name)}</span></label>`).join('');
+  openModal({title:existing?'Edit extra':'Add extra',confirmLabel:existing?'Save extra':'Add extra',
+    body:`<div class="field"><label class="lab">Name</label><input class="m-input" id="xe-name" value="${esc(e.name)}" placeholder="e.g. Chocolate topping"></div>
+      <div class="form-grid">
+        <div><label class="lab">Price (${curCode()}) — 0 = free</label><input class="m-input" id="xe-price" type="number" min="0" value="${e.price}"></div>
+        <div><label class="lab">Consumes supply</label><select id="xe-ing">${ingOpts}</select></div>
+        <div><label class="lab">Quantity used</label><input class="m-input" id="xe-qty" type="number" min="0" value="${e.qty}"></div>
+        <div><label class="lab">Active</label><select id="xe-active"><option value="1" ${e.active?'selected':''}>Yes</option><option value="0" ${e.active?'':'selected'}>No</option></select></div>
+      </div>
+      <label class="lab" style="margin-top:12px">Offered on which drinks</label><div style="max-height:190px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:4px 12px">${prodChecks||'<div class="help">Add coffees first.</div>'}</div>`,
+    onConfirm:root=>{
+      const name=root.querySelector('#xe-name').value.trim(); if(!name){toast('Name is required',I.issues);return false;}
+      const rec={name,price:+root.querySelector('#xe-price').value||0,ingredient_id:root.querySelector('#xe-ing').value,qty:+root.querySelector('#xe-qty').value||0,active:root.querySelector('#xe-active').value==='1'};
+      const prods=[...root.querySelectorAll('[data-xp]')].filter(c=>c.checked).map(c=>c.dataset.xp);
+      saveExtra(existing?existing.id:null, rec, prods);
+    }});
+}
+async function saveExtra(id, rec, prods){
+  let exId=id;
+  if(id){ const r=await sb.from('extras').update(rec).eq('id',id).select('id'); if(r.error){toast('Save failed: '+r.error.message,I.issues);return;} if(!r.data||!r.data.length){toast('Not saved — admin only',I.issues);return;} }
+  else { const r=await sb.from('extras').insert(rec).select('id').single(); if(r.error){toast('Could not add extra: '+r.error.message,I.issues);return;} exId=r.data.id; }
+  await sb.from('extra_products').delete().eq('extra_id',exId);
+  if(prods.length){ const r=await sb.from('extra_products').insert(prods.map(pid=>({extra_id:exId,product_id:pid}))); if(r.error){toast('Saved, but drink links failed: '+r.error.message,I.issues);await loadAll();render();return;} }
+  await loadAll(); render(); toast('Extra saved',I.check);
+}
 function manageTeam(){
   const rows=DB.users.map(u=>{
     const isMe=u.id===me.id;
@@ -275,18 +493,34 @@ function manageTeam(){
       <thead><tr><th>Member</th><th>Role</th><th class="r">Password</th><th class="r">Remove</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>
     <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn-ghost" id="addUser">${I.plus} Add team member</button></div>
-    <div class="callout">${I.shield}<div><b>Admins</b> can open this Admin area (supplies, coffees, team). <b>Staff</b> can sell coffee and log issues only. In this prototype, accounts live in your browser — the live version stores them securely in Supabase Auth with hashed passwords.</div></div>`;
+    <div class="callout">${I.shield}<div><b>Admins</b> open this Admin area (catalog, extras, team, settings). <b>Staff</b> can sell, view stock, log issues, and see orders. Accounts are stored securely in Supabase Auth (passwords are hashed); Add / Reset / Remove use the admin-users function.</div></div>`;
 }
 
 function manageSettings(){
   const s=DB.settings;
   const curOpts=Object.entries(CURRENCIES).map(([c,o])=>`<option value="${c}" ${c===s.currency?'selected':''}>${o.label}</option>`).join('');
-  return `<div class="card card-pad" style="max-width:540px">
+  return `<div class="card card-pad" style="max-width:620px">
       <div class="section-title">Shop settings</div><div class="section-sub">These apply everywhere in the app.</div>
-      <div class="field"><label class="lab" for="set-shop">Shop name</label><input class="m-input" id="set-shop" value="${esc(s.shopName)}"></div>
-      <div class="field"><label class="lab" for="set-cur">Currency</label><select id="set-cur">${curOpts}</select>
-        <div class="help" id="set-prev">Sample price: <b>${money(220)}</b>. Prices are stored as numbers — changing currency changes the symbol, not the amount.</div></div>
-      <button class="btn btn-primary" id="saveSettings" style="margin-top:6px">${I.check} Save settings</button>
+      <div class="form-grid">
+        <div><label class="lab" for="set-shop">Shop name (app title)</label><input class="m-input" id="set-shop" value="${esc(s.shopName)}"></div>
+        <div><label class="lab" for="set-cur">Currency</label><select id="set-cur">${curOpts}</select></div>
+      </div>
+      <div class="help" id="set-prev" style="margin-top:8px">Sample price: <b>${money(220)}</b>. Changing currency changes the symbol, not the amount.</div>
+
+      <div class="section-title" style="margin-top:20px">GST &amp; invoice</div><div class="section-sub">Printed on every bill. Required for a valid Tax Invoice.</div>
+      <div class="form-grid">
+        <div class="full"><label class="lab" for="set-legal">Legal / trade name</label><input class="m-input" id="set-legal" value="${esc(s.legalName||'')}" placeholder="e.g. GM Wellness Foods Pvt Ltd"></div>
+        <div><label class="lab" for="set-gstin">GSTIN</label><input class="m-input" id="set-gstin" value="${esc(s.gstin||'')}" placeholder="15-character GSTIN"></div>
+        <div><label class="lab" for="set-state">State (place of supply)</label><input class="m-input" id="set-state" value="${esc(s.state||'')}" placeholder="e.g. Maharashtra"></div>
+        <div class="full"><label class="lab" for="set-addr">Address</label><input class="m-input" id="set-addr" value="${esc(s.address||'')}" placeholder="Shop address"></div>
+        <div><label class="lab" for="set-phone">Phone</label><input class="m-input" id="set-phone" value="${esc(s.phone||'')}"></div>
+        <div><label class="lab" for="set-fssai">FSSAI (optional)</label><input class="m-input" id="set-fssai" value="${esc(s.fssai||'')}"></div>
+        <div><label class="lab" for="set-prefix">Invoice prefix</label><input class="m-input" id="set-prefix" value="${esc(s.invoicePrefix||'GMW')}"></div>
+        <div><label class="lab" for="set-rate">GST rate (%)</label><input class="m-input" id="set-rate" type="number" min="0" step="0.5" value="${s.gstRate}"></div>
+        <div><label class="lab" for="set-ot">Show Dine-in / Takeaway</label><select id="set-ot"><option value="1" ${s.orderTypeOn!==false?'selected':''}>Yes</option><option value="0" ${s.orderTypeOn===false?'selected':''}>No</option></select></div>
+      </div>
+      <div class="help" style="margin-top:8px">Invoice numbers run like <b>${esc(s.invoicePrefix||'GMW')}/2026-27/0001</b> and reset each financial year (Apr–Mar). GST 5% is standard for a standalone cafe.</div>
+      <button class="btn btn-primary" id="saveSettings" style="margin-top:16px">${I.check} Save settings</button>
     </div>
     <div class="card card-pad" style="max-width:540px;margin-top:16px">
       <div class="section-title">Backup &amp; migration</div>
@@ -302,31 +536,23 @@ function manageSettings(){
 function setShopName(){document.querySelectorAll('.wordmark').forEach(e=>{e.textContent=(DB.settings&&DB.settings.shopName)||'GM Wellness';});}
 
 /* ============================ ACTIONS ============================ */
-async function sell(pid){
-  const p=DB.products.find(x=>x.id===pid); if(!p)return;
-  const {cups}=cupCapacity(p); if(cups<=0){toast('Out of stock for '+p.name,I.issues);return;}
-  const {data,error}=await sb.rpc('record_sale',{p_product_id:pid});
-  if(error){toast(error.message||'Could not record sale',I.issues);return;}
-  lastSale={id:data};
-  const card=document.querySelector(`.prod[data-prod="${pid}"]`);
-  if(card){card.classList.add('justsold');setTimeout(()=>card.classList.remove('justsold'),950);}
-  await loadAll();
-  toast(`Sold ${p.name} · ${money(p.price)}`,I.check,'Undo',undoSale);
-  if(view==='sell')render();
-}
-async function undoSale(){if(!lastSale)return;const id=lastSale.id;lastSale=null;const {error}=await sb.rpc('undo_sale',{p_sale_id:id});if(error){toast(error.message||'Undo failed',I.issues);return;}await loadAll();render();toast('Sale reversed',I.undo);}
 async function logIssue(id,amount,mode,reason){const {error}=await sb.rpc('log_issue',{p_ingredient_id:id,p_amount:amount,p_mode:mode,p_reason:reason});if(error){toast(error.message||'Could not log issue',I.issues);return;}await loadAll();render();toast('Issue logged · stock updated',I.check);}
 
 /* ============================ WIRE ============================ */
 function wire(){
-  document.querySelectorAll('[data-sell]').forEach(b=>b.onclick=()=>sell(b.dataset.sell));
   document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>go(b.dataset.goto));
-  document.querySelectorAll('[data-reverse]').forEach(b=>b.onclick=()=>{const id=b.dataset.reverse;
-    confirmModal('Reverse this sale?','The stock will be added back and this sale removed from your records.','Reverse',async()=>{
-      const {error}=await sb.rpc('undo_sale',{p_sale_id:id});
-      if(error){toast(error.message||'Could not reverse',I.issues);return;}
-      lastSale=null; await loadAll(); render(); toast('Sale reversed',I.undo);
-    },true);});
+  document.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>openAddModal(b.dataset.add));
+  // checkout / cart
+  document.querySelectorAll('[data-cq]').forEach(b=>b.onclick=()=>{const l=cart.find(x=>x.uid===b.dataset.uid);if(!l)return;if(b.dataset.cq==='+')l.qty++;else if(l.qty>1)l.qty--;render();});
+  document.querySelectorAll('[data-crm]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.uid!==b.dataset.crm);render();});
+  document.querySelectorAll('[data-ot]').forEach(b=>b.onclick=()=>{coState.orderType=b.dataset.ot;render();});
+  document.querySelectorAll('[data-pm]').forEach(b=>b.onclick=()=>{coState.paymentMode=b.dataset.pm;render();});
+  const so=document.getElementById('submitOrder');if(so)so.onclick=submitOrder;
+  // orders history
+  const osrch=document.getElementById('orderSearch');if(osrch)osrch.oninput=()=>{orderQuery=osrch.value;render();const el=document.getElementById('orderSearch');if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}};
+  document.querySelectorAll('[data-viewrcpt]').forEach(b=>b.onclick=()=>{const o=DB.orders.find(x=>x.id===b.dataset.viewrcpt);if(o)showReceipt(o);});
+  document.querySelectorAll('[data-revorder]').forEach(b=>{if(b.disabled)return;b.onclick=()=>{const id=b.dataset.revorder;
+    confirmModal('Reverse this order?','Stock will be added back and the order removed from your records.','Reverse',async()=>{const {error}=await sb.rpc('reverse_order',{p_order_id:id});if(error){toast(error.message||'Could not reverse',I.issues);return;}await loadAll();render();toast('Order reversed',I.undo);},true);};});
 
   const form=document.getElementById('issueForm');
   if(form){let mode='coffees';const hint=document.getElementById('ii-unithint'),prev=document.getElementById('ii-preview'),sel=document.getElementById('ii-ing'),amt=document.getElementById('ii-amt');
@@ -353,16 +579,28 @@ function wire(){
     confirmModal('Remove coffee?',`"${esc(p.name)}" will be removed from the menu.`,'Remove',async()=>{const {error}=await sb.from('products').delete().eq('id',p.id);if(error){toast('Could not remove',I.issues);return;}await loadAll();render();toast('Coffee removed',I.trash);},true);});
   const addC=document.getElementById('addCoffee');if(addC)addC.onclick=addCoffee;
 
+  // EXTRAS
+  const addX=document.getElementById('addExtra');if(addX)addX.onclick=()=>extraModal(null);
+  document.querySelectorAll('[data-editextra]').forEach(b=>b.onclick=()=>{const e=DB.extras.find(x=>x.id===b.dataset.editextra);if(e)extraModal(e);});
+  document.querySelectorAll('[data-delextra]').forEach(b=>b.onclick=()=>{const e=DB.extras.find(x=>x.id===b.dataset.delextra);if(!e)return;confirmModal('Remove extra?',`"${esc(e.name)}" will be deleted.`,'Remove',async()=>{const {error}=await sb.from('extras').delete().eq('id',e.id);if(error){toast('Could not delete: '+error.message,I.issues);return;}await loadAll();render();toast('Extra removed',I.trash);},true);});
+
   // SETTINGS
   const setCur=document.getElementById('set-cur');
   if(setCur){
     setCur.onchange=()=>{const prev=document.getElementById('set-prev');const c=setCur.value;
       try{const f=new Intl.NumberFormat((CURRENCIES[c]||CURRENCIES.INR).locale,{style:'currency',currency:c,maximumFractionDigits:0});prev.innerHTML=`Sample price: <b>${f.format(220)}</b>. Prices are stored as numbers — changing currency changes the symbol, not the amount.`;}catch(e){}};
     document.getElementById('saveSettings').onclick=async()=>{
-      const shopName=document.getElementById('set-shop').value.trim()||'GM Wellness';const currency=setCur.value;
-      const {error}=await sb.from('shop_settings').update({shop_name:shopName,currency}).eq('id',1);
-      if(error){toast('Could not save settings',I.issues);return;}
-      DB.settings={shopName,currency};setShopName();render();toast('Settings saved',I.check);};
+      const g=id=>{const el=document.getElementById(id);return el?el.value:'';};
+      const rec={shop_name:g('set-shop').trim()||'GM Wellness', currency:setCur.value,
+        legal_name:g('set-legal').trim(), gstin:g('set-gstin').trim(), address:g('set-addr').trim(),
+        state:g('set-state').trim(), phone:g('set-phone').trim(), fssai:g('set-fssai').trim(),
+        invoice_prefix:g('set-prefix').trim()||'GMW', gst_rate:parseFloat(g('set-rate'))||5,
+        order_type_on:g('set-ot')==='1'};
+      const {data,error}=await sb.from('shop_settings').update(rec).eq('id',1).select('id');
+      if(error){toast('Could not save settings: '+error.message,I.issues);return;}
+      if(!data||!data.length){toast('Not saved — admin only',I.issues);return;}
+      DB.settings=mapSettings({shop_name:rec.shop_name,currency:rec.currency,legal_name:rec.legal_name,gstin:rec.gstin,address:rec.address,state:rec.state,phone:rec.phone,fssai:rec.fssai,invoice_prefix:rec.invoice_prefix,gst_rate:rec.gst_rate,order_type_on:rec.order_type_on});
+      setShopName();render();toast('Settings saved',I.check);};
   }
   const exBtn=document.getElementById('exportCfg');if(exBtn)exBtn.onclick=exportConfig;
   const imBtn=document.getElementById('importCfg');if(imBtn)imBtn.onclick=importConfigModal;
