@@ -200,8 +200,10 @@ function viewCheckout(){
         ${otOn?`<label class="lab">Order type</label><div class="seg-inline" role="group" aria-label="Order type" style="margin-bottom:14px">${['dine-in','takeaway'].map(t=>`<button type="button" data-ot="${t}" aria-pressed="${coState.orderType===t}">${t==='dine-in'?'Dine-in':'Takeaway'}</button>`).join('')}</div>`:''}
         <label class="lab">Payment mode</label><div class="seg-inline" role="group" aria-label="Payment mode">${['Cash','UPI','Card'].map(m=>`<button type="button" data-pm="${m}" aria-pressed="${coState.paymentMode===m}">${m}</button>`).join('')}</div>
         <div class="co-tot"><div><span>Taxable value</span><b class="num">${money(taxable)}</b></div><div><span>CGST @ ${rate/2}%</span><b class="num">${money(cgst)}</b></div><div><span>SGST @ ${rate/2}%</span><b class="num">${money(sgst)}</b></div><div class="co-grand"><span>Total payable</span><b class="num">${money(total)}</b></div></div>
-        <button class="btn btn-primary btn-block" id="submitOrder" style="margin-top:16px">${I.check} Submit &amp; generate bill</button>
-        <div class="help" style="text-align:center;margin-top:8px">Prices are GST-inclusive · GST ${rate}%</div>
+        <div style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <span class="help">Prices incl. GST ${rate}%</span>
+          <button class="btn btn-primary" id="submitOrder">${I.check} Submit &amp; generate bill</button>
+        </div>
       </div>
     </div>`;
 }
@@ -245,7 +247,10 @@ function receiptHTML(o){
       ${Math.abs(o.roundOff)>=0.005?`<div><span>Round off</span><b class="num">${money(o.roundOff)}</b></div>`:''}
       <div class="rc-grand"><span>Total</span><b class="num">${money(o.total)}</b></div>
     </div>
-    <div class="rc-foot">SAC 9963 · Prices inclusive of GST @ ${rate}%<br>Thank you &amp; see you again!</div>
+    <div class="rc-foot">SAC 9963 · Prices inclusive of GST @ ${rate}%<br>
+      This is a computer-generated invoice and does not require a signature.<br>
+      ${s.state?('Subject to '+esc(s.state)+' jurisdiction. '):''}Goods once sold are not returnable.<br>
+      <b>Thank you &amp; see you again!</b></div>
   </div>`;
 }
 function showReceipt(o){
@@ -265,7 +270,7 @@ function downloadReceiptPDF(o){
     const s=DB.settings, rate=s.gstRate||5; const jsPDF=window.jspdf&&window.jspdf.jsPDF;
     if(!jsPDF){window.print();return;}
     const M=n=>curCode()==='INR'?('Rs '+Math.round(n).toLocaleString('en-IN')):money(n);
-    const doc=new jsPDF({unit:'pt',format:[300,600]}); let y=28; const L=16, R=284;
+    const doc=new jsPDF({unit:'pt',format:[300,820]}); let y=28; const L=16, R=284;
     const line=(t,opt={})=>{doc.setFont('helvetica',opt.b?'bold':'normal');doc.setFontSize(opt.s||10);doc.text(String(t),opt.c?150:(opt.right?R:L),y,{align:opt.c?'center':(opt.right?'right':'left')});y+=(opt.s||10)+4;};
     const rowLR=(l,r,b)=>{doc.setFont('helvetica',b?'bold':'normal');doc.setFontSize(10);doc.text(String(l),L,y);doc.text(String(r),R,y,{align:'right'});y+=15;};
     doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(s.legalName||s.shopName||'GM Wellness',150,y,{align:'center'});y+=18;
@@ -282,7 +287,10 @@ function downloadReceiptPDF(o){
     rowLR('Taxable', M(o.taxable)); rowLR('CGST @'+(rate/2)+'%', M(o.cgst)); rowLR('SGST @'+(rate/2)+'%', M(o.sgst));
     if(Math.abs(o.roundOff)>=0.005) rowLR('Round off', M(o.roundOff));
     rowLR('TOTAL', M(o.total), true);
-    y+=6; line('SAC 9963 · incl. GST '+rate+'%',{c:true,s:8}); line('Thank you & see you again!',{c:true,s:9});
+    y+=6; line('SAC 9963 - incl. GST '+rate+'%',{c:true,s:8});
+    line('Computer-generated invoice; no signature required.',{c:true,s:7});
+    line((s.state?('Subject to '+s.state+' jurisdiction. '):'')+'Goods once sold not returnable.',{c:true,s:7});
+    line('Thank you & see you again!',{c:true,s:9});
     doc.save((o.invoiceNo||'receipt').replace(/[\\/]/g,'-')+'.pdf');
   }catch(e){window.print();}
 }
@@ -462,9 +470,10 @@ function extraModal(existing){
       <div class="form-grid">
         <div><label class="lab">Price (${curCode()}) — 0 = free</label><input class="m-input" id="xe-price" type="number" min="0" value="${e.price}"></div>
         <div><label class="lab">Consumes supply</label><select id="xe-ing">${ingOpts}</select></div>
-        <div><label class="lab">Quantity used</label><input class="m-input" id="xe-qty" type="number" min="0" value="${e.qty}"></div>
+        <div><label class="lab">Supply used per extra</label><input class="m-input" id="xe-qty" type="number" min="0" value="${e.qty}"></div>
         <div><label class="lab">Active</label><select id="xe-active"><option value="1" ${e.active?'selected':''}>Yes</option><option value="0" ${e.active?'':'selected'}>No</option></select></div>
       </div>
+      <div class="help" style="margin-top:8px">"Supply used per extra" is how much of the chosen supply one of this extra subtracts from stock (in that supply's unit) — e.g. Extra shot = 18 g Arabica. Use 0 if it shouldn't affect stock.</div>
       <label class="lab" style="margin-top:12px">Offered on which drinks</label><div style="max-height:190px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:4px 12px">${prodChecks||'<div class="help">Add coffees first.</div>'}</div>`,
     onConfirm:root=>{
       const name=root.querySelector('#xe-name').value.trim(); if(!name){toast('Name is required',I.issues);return false;}
