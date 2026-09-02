@@ -71,6 +71,24 @@ async function loadAll(){
   }
 }
 const extrasFor=pid=>DB.extras.filter(e=>e.active&&e.products.includes(pid));
+// Typical per-serving amounts (industry standards) for defaults + soft warnings.
+function stdFor(x,ctx){
+  if(!x) return {def:1,min:0,max:1e12};
+  const cat=(x.cat||'').toLowerCase(), u=x.unit;
+  if(cat==='beans') return {def:18,min:7,max:25};
+  if(cat==='milk')  return {def:ctx==='extra'?40:150,min:20,max:200};
+  if(u==='pcs')     return {def:1,min:1,max:3};
+  if(u==='ml')      return {def:10,min:5,max:30};   // syrups etc.
+  if(u==='g')       return {def:10,min:5,max:20};   // powders/toppings
+  return {def:1,min:0,max:1e12};
+}
+function rangeMsg(x,val,ctx){
+  if(!x||!(val>0)) return '';
+  const s=stdFor(x,ctx);
+  if(val<s.min) return `⚠ ${fmtNum(val)}${x.unit} looks low for ${x.name} — typical ${s.min}–${s.max}${x.unit} per ${ctx==='extra'?'extra':'cup'}`;
+  if(val>s.max) return `⚠ ${fmtNum(val)}${x.unit} looks high for ${x.name} — typical ${s.min}–${s.max}${x.unit} per ${ctx==='extra'?'extra':'cup'}`;
+  return '';
+}
 
 /* ============================ HELPERS ============================ */
 const ing=id=>DB.ingredients.find(x=>x.id===id);
@@ -413,12 +431,13 @@ function viewManage(){
 }
 function manageSupplies(){
   const rows=DB.ingredients.map(x=>{const s=statusOf(ratio(x));
+    const implied=x.perPacket?x.packet/x.perPacket:0; const sstd=stdFor(x,'recipe'); const flag=implied>0&&(implied<sstd.min||implied>sstd.max);
     return `<tr data-ing="${x.id}"><td><b>${esc(x.name)}</b><div style="font-size:11.5px;color:var(--ink-faint)">${esc(x.cat)} · measured in ${x.unit}</div></td>
       <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="packet" value="${x.packet}" data-tip="How much one packet/bag holds, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
       <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="perPacket" value="${x.perPacket}" data-tip="How many cups one packet makes"><span class="unit"></span></div></td>
       <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="0" data-f="stock" value="${Math.round(x.stock)}" data-tip="Current quantity on hand, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
       <td><div class="numcell"><span class="unit"></span><input class="mini-input" type="number" min="1" data-f="par" value="${x.par}" data-tip="Full / ideal stock level, in ${x.unit}"><span class="unit">${x.unit}</span></div></td>
-      <td class="r"><span class="pill ${s}" style="font-size:10.5px">${statusLabel(s)}</span><div style="font-size:10.5px;color:var(--ink-faint);margin-top:3px">${coffeesLeft(x)} cups</div></td>
+      <td class="r"><span class="pill ${s}" style="font-size:10.5px">${statusLabel(s)}</span><div style="font-size:10.5px;color:var(--ink-faint);margin-top:3px">${coffeesLeft(x)} cups</div>${flag?`<div class="warn-msg" style="font-size:10px;margin-top:2px" data-tip="1 packet (${fmtNum(x.packet)}${x.unit}) ÷ ${x.perPacket} cups = ${implied.toFixed(1)}${x.unit}/cup — typical ${sstd.min}–${sstd.max}${x.unit}. Check packet size or coffees/packet.">⚠ check ratio</div>`:''}</td>
       <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap"><button class="btn-ghost btn-mini" data-updrow="${x.id}" data-tip="Save this row's changes">${I.check}Update</button><button class="btn-ghost btn-mini" data-restock="${x.id}" data-tip="Add one full packet (${x.packet}${x.unit}) to stock">${I.plus}Packet</button><button class="btn-ghost btn-mini" data-delsupply="${x.id}" data-tip="Delete this supply" style="padding:6px 8px">${I.trash}</button></div></td></tr>`;}).join('');
   const H=(label,tip)=>`<th style="text-align:center">${label} <span class="tip-badge" data-tip="${tip}" tabindex="0" aria-label="${tip}">i</span></th>`;
   return `<div class="card"><div class="tbl-wrap"><table>
@@ -462,7 +481,8 @@ function manageExtras(){
       <span class="help">Each extra draws down a supply (keeps stock accurate) and is Free or chargeable. Pick which drinks it's offered on.</span></div>`;
 }
 function extraModal(existing){
-  const e=existing||{name:'',price:0,ingredientId:(DB.ingredients[0]||{}).id,qty:0,active:true,products:[]};
+  const first=DB.ingredients[0]||{};
+  const e=existing||{name:'',price:0,ingredientId:first.id,qty:stdFor(first,'extra').def,active:true,products:[]};
   const ingOpts=DB.ingredients.map(i=>`<option value="${i.id}" ${i.id===e.ingredientId?'selected':''}>${esc(i.name)} (${i.unit})</option>`).join('');
   const prodChecks=DB.products.map(p=>`<label class="exrow"><span><input type="checkbox" data-xp="${p.id}" ${e.products&&e.products.includes(p.id)?'checked':''}> ${esc(p.name)}</span></label>`).join('');
   openModal({title:existing?'Edit extra':'Add extra',confirmLabel:existing?'Save extra':'Add extra',
@@ -470,10 +490,11 @@ function extraModal(existing){
       <div class="form-grid">
         <div><label class="lab">Price (${curCode()}) — 0 = free</label><input class="m-input" id="xe-price" type="number" min="0" value="${e.price}"></div>
         <div><label class="lab">Consumes supply</label><select id="xe-ing">${ingOpts}</select></div>
-        <div><label class="lab">Supply used per extra</label><input class="m-input" id="xe-qty" type="number" min="0" value="${e.qty}"></div>
+        <div><label class="lab">Supply used per extra <span id="xe-unit" style="color:var(--ink-faint)"></span></label><input class="m-input" id="xe-qty" type="number" min="0" value="${e.qty}"></div>
         <div><label class="lab">Active</label><select id="xe-active"><option value="1" ${e.active?'selected':''}>Yes</option><option value="0" ${e.active?'':'selected'}>No</option></select></div>
       </div>
-      <div class="help" style="margin-top:8px">"Supply used per extra" is how much of the chosen supply one of this extra subtracts from stock (in that supply's unit) — e.g. Extra shot = 18 g Arabica. Use 0 if it shouldn't affect stock.</div>
+      <div class="warn-msg" id="xe-warn"></div>
+      <div class="help" style="margin-top:6px">How much of the chosen supply one of this extra subtracts from stock. Picking a supply suggests a typical amount; use 0 for no stock impact.</div>
       <label class="lab" style="margin-top:12px">Offered on which drinks</label><div style="max-height:190px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:4px 12px">${prodChecks||'<div class="help">Add coffees first.</div>'}</div>`,
     onConfirm:root=>{
       const name=root.querySelector('#xe-name').value.trim(); if(!name){toast('Name is required',I.issues);return false;}
@@ -481,6 +502,9 @@ function extraModal(existing){
       const prods=[...root.querySelectorAll('[data-xp]')].filter(c=>c.checked).map(c=>c.dataset.xp);
       saveExtra(existing?existing.id:null, rec, prods);
     }});
+  const ingSel=document.getElementById('xe-ing'), qEl=document.getElementById('xe-qty'), unitEl=document.getElementById('xe-unit'), warnEl=document.getElementById('xe-warn');
+  const refresh=(setDefault)=>{const x=ing(ingSel.value); if(unitEl)unitEl.textContent=x?('('+x.unit+')'):''; if(setDefault&&x)qEl.value=stdFor(x,'extra').def; if(warnEl)warnEl.textContent=rangeMsg(x,parseFloat(qEl.value),'extra');};
+  if(ingSel){ingSel.onchange=()=>refresh(true); qEl.oninput=()=>refresh(false); refresh(false);}
 }
 async function saveExtra(id, rec, prods){
   let exId=id;
@@ -711,9 +735,12 @@ function editRecipe(pid){
   const draft=p.recipe.map(r=>[r[0],r[1]]);
   const root=document.getElementById('modalRoot');
   const ingOptions=sel=>DB.ingredients.map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)} (${x.unit})</option>`).join('');
-  const rowsHTML=()=>draft.map((r,idx)=>`<div class="recipe-row"><select data-ri="${idx}">${ingOptions(r[0])}</select>
+  const rowsHTML=()=>draft.map((r,idx)=>{const x=ing(r[0]);return `<div class="recipe-row"><select data-ri="${idx}">${ingOptions(r[0])}</select>
       <input class="mini-input" style="width:100%;text-align:left" type="number" min="0" step="1" data-rq="${idx}" value="${r[1]}">
-      <button class="icon-btn" data-rrm="${idx}" style="width:34px;height:34px" aria-label="Remove">${I.close}</button></div>`).join('');
+      <span class="unit">${x?x.unit:''}</span>
+      <button class="icon-btn" data-rrm="${idx}" style="width:34px;height:34px" aria-label="Remove">${I.close}</button></div>`;}).join('');
+  const recWarn=()=>draft.map(r=>rangeMsg(ing(r[0]),r[1],'recipe')).filter(Boolean);
+  const updWarn=()=>{const el=document.getElementById('recWarn');if(el)el.innerHTML=recWarn().map(esc).join('<br>');};
   function draw(){
     root.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="Edit recipe">
       <div class="modal-head"><h3>Edit coffee</h3><button class="icon-btn" id="mclose" aria-label="Close">${I.close}</button></div>
@@ -721,16 +748,18 @@ function editRecipe(pid){
         <div class="field"><label class="lab" for="mname">Name</label><input class="m-input" id="mname" value="${esc(p.name)}"></div>
         <div class="field"><label class="lab" for="mprice">Price (${curCode()})</label><input class="m-input" id="mprice" type="number" min="0" value="${p.price}"></div>
         <label class="lab" style="margin-top:6px">Ingredients used per cup</label><div id="recRows">${rowsHTML()}</div>
-        <button class="btn-ghost btn-mini" id="addRow" style="margin-top:4px">${I.plus} Add ingredient</button></div>
+        <div class="warn-msg" id="recWarn"></div>
+        <button class="btn-ghost btn-mini" id="addRow" style="margin-top:8px">${I.plus} Add ingredient</button></div>
       <div class="modal-foot"><button class="btn-ghost" id="mcancel">Cancel</button><button class="btn btn-primary" id="msave">${I.check} Save</button></div>
     </div></div>`;
     const close=()=>root.innerHTML='';
     document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
     document.getElementById('mclose').onclick=close;document.getElementById('mcancel').onclick=close;
-    document.querySelectorAll('[data-ri]').forEach(s=>s.onchange=()=>draft[+s.dataset.ri][0]=s.value);
-    document.querySelectorAll('[data-rq]').forEach(i=>i.oninput=()=>draft[+i.dataset.rq][1]=parseFloat(i.value)||0);
+    document.querySelectorAll('[data-ri]').forEach(s=>s.onchange=()=>{const idx=+s.dataset.ri;draft[idx][0]=s.value;draft[idx][1]=stdFor(ing(s.value),'recipe').def;draw();});
+    document.querySelectorAll('[data-rq]').forEach(i=>i.oninput=()=>{draft[+i.dataset.rq][1]=parseFloat(i.value)||0;updWarn();});
     document.querySelectorAll('[data-rrm]').forEach(b=>b.onclick=()=>{draft.splice(+b.dataset.rrm,1);draw();});
-    document.getElementById('addRow').onclick=()=>{draft.push(['arabica',10]);draw();};
+    document.getElementById('addRow').onclick=()=>{const f=DB.ingredients[0]||{};draft.push([f.id,stdFor(f,'recipe').def]);draw();};
+    updWarn();
     document.getElementById('msave').onclick=async()=>{const name=document.getElementById('mname').value.trim()||p.name;const price=parseFloat(document.getElementById('mprice').value)||0;const items=draft.filter(r=>r[1]>0);
       const up=await sb.from('products').update({name,price}).eq('id',p.id);if(up.error){toast('Save failed',I.issues);return;}
       await sb.from('recipe_items').delete().eq('product_id',p.id);
