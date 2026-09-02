@@ -402,6 +402,47 @@
   .receipt .rc-grand span,.receipt .rc-grand b{font-weight:700;color:#111}
   .receipt .rc-foot{text-align:center;font-size:10.5px;color:#666;margin-top:12px;border-top:1px dashed #999;padding-top:8px}
 
+  /* --- discounts, cancelled invoices --- */
+  .disc-box{margin-top:18px;padding:14px;border:1px dashed var(--line);border-radius:12px;background:var(--surface-2,transparent)}
+  .disc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+  .row-void{opacity:.62}
+  .row-void td b:first-child{text-decoration:line-through}
+  .receipt .rc-cancel{text-align:center;font-weight:700;letter-spacing:.2em;font-size:14px;color:#b00;border:2px solid #b00;padding:3px 0;margin:6px 0}
+  .receipt .rc-cancelnote{margin-top:10px;padding-top:8px;border-top:1px dashed #b00;font-size:10px;color:#b00;text-align:center}
+  .receipt.th58 .rc-cancel{font-size:11px;letter-spacing:.12em}
+  /* --- thermal paper widths (per-till, remembered on the device) --- */
+  .rc-fmtbar{display:flex;align-items:center;gap:10px;justify-content:center;margin-bottom:14px;flex-wrap:wrap}
+  .receipt.th80{max-width:76mm;padding:12px 8px;font-size:12px}
+  .receipt.th80 .rc-shop{font-size:16px}
+  .receipt.th58{max-width:52mm;padding:9px 5px;font-size:10px;line-height:1.42}
+  .receipt.th58 .rc-shop{font-size:13px;letter-spacing:0}
+  .receipt.th58 .rc-line,.receipt.th58 .rc-meta{font-size:8.5px}
+  .receipt.th58 .rc-title{font-size:10px;letter-spacing:.1em;margin:6px 0}
+  .receipt.th58 .rc-tbl{font-size:9.5px;margin:7px 0}
+  .receipt.th58 .rc-tbl th{font-size:8px;padding:3px 1px}
+  .receipt.th58 .rc-tbl th:nth-child(2),.receipt.th58 .rc-tbl td:nth-child(2){width:56px}
+  .receipt.th58 .rc-tbl tr.rc-n td{border-bottom:none;padding:4px 1px 0}
+  .receipt.th58 .rc-tbl tr.rc-v td{padding:0 1px 4px;color:#444}
+  .receipt.th58 .rc-ex{font-size:8.5px}
+  .receipt.th58 .rc-tot>div{font-size:9.5px}
+  .receipt.th58 .rc-grand{font-size:12px}
+  .receipt.th58 .rc-foot{font-size:8px;margin-top:9px}
+  .seg-wrap{flex-wrap:wrap}
+  @media print{
+    .rc-fmtbar{display:none !important}
+    .receipt.th80,.receipt.th58{max-width:100% !important;padding:0 !important}
+  }
+  /* Printing the Reports page: show the content pane instead of the receipt modal. */
+  @media print{
+    body.print-report>*{visibility:hidden !important}
+    body.print-report #modalRoot,body.print-report #modalRoot *{visibility:hidden !important}
+    body.print-report #view,body.print-report #view *{visibility:visible !important}
+    body.print-report #view{position:absolute;left:0;top:0;width:100%;padding:0}
+    body.print-report .seg-inline,body.print-report .seg,body.print-report button,
+    body.print-report .sidebar,body.print-report .topbar,body.print-report .botnav{display:none !important}
+    body.print-report .card{break-inside:avoid;box-shadow:none;border:1px solid #ccc}
+    body.print-report .tbl-wrap{overflow:visible !important}
+  }
   @media print{
     body>*{visibility:hidden !important}
     #modalRoot,#modalRoot *{visibility:visible !important}

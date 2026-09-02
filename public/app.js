@@ -35,13 +35,36 @@ function mapIngredient(r){return {id:r.id,name:r.name,cat:r.category,unit:r.unit
 function mapProduct(r){return {id:r.id,name:r.name,price:Number(r.price),recipe:(r.recipe_items||[]).map(ri=>[ri.ingredient_id,Number(ri.qty)])};}
 
 /* ============================ STATE ============================ */
-const DEF_SETTINGS={shopName:'GM Wellness',currency:'INR',legalName:'',gstin:'',address:'',state:'',phone:'',fssai:'',invoicePrefix:'GMW',gstRate:5,orderTypeOn:true};
+const DEF_SETTINGS={shopName:'GM Wellness',currency:'INR',legalName:'',gstin:'',address:'',state:'',phone:'',fssai:'',invoicePrefix:'GMW',gstRate:5,orderTypeOn:true,maxStaffDiscPct:15};
 let DB={ingredients:[],products:[],extras:[],orders:[],orderItems:[],issues:[],users:[],settings:{...DEF_SETTINGS}};
 let me=null, view='sell', lastSale=null, toastTimer=null, manageTab='supplies';
 let cart=[]; // [{uid, pid, name, price, qty, extras:[{id,name,price}]}]
-let coState={orderType:'dine-in',paymentMode:'Cash'};
+// Bill format is a per-till/printer choice, remembered on this device (not shop-wide).
+const RC_FORMATS={a4:'A4 / slip',th80:'80 mm',th58:'58 mm'};
+function rcFmtGet(){try{const v=localStorage.getItem('gm_rcfmt');return RC_FORMATS[v]?v:'a4';}catch(e){return 'a4';}}
+function rcFmtSet(v){try{localStorage.setItem('gm_rcfmt',v);}catch(e){}}
+let rcFmt=rcFmtGet();
+let coState={orderType:'dine-in',paymentMode:'Cash',discMode:'pct',discPct:0,discAmt:0,reasonPreset:'',reasonText:'',customerName:''};
+const DISCOUNT_PRESETS=[0,5,10,15];
+const REASON_PRESETS=['Regular customer','Loyalty / repeat visit','Staff meal','Service delay','Remake / damaged','Owner comp','Promotion','Other (type below)'];
+function resetCheckoutState(){coState={orderType:coState.orderType,paymentMode:coState.paymentMode,discMode:'pct',discPct:0,discAmt:0,reasonPreset:'',reasonText:'',customerName:''};}
+function discCap(){const v=DB.settings&&DB.settings.maxStaffDiscPct;return v==null?15:Number(v);}
+function discInfo(){
+  const gross=cartTotal();
+  let amt = coState.discMode==='amt'
+    ? Math.max(0,Number(coState.discAmt)||0)
+    : +(gross*(Math.max(0,Math.min(100,Number(coState.discPct)||0))/100)).toFixed(2);
+  if(amt>gross) amt=gross;
+  const pct = gross>0 ? +(amt/gross*100).toFixed(2) : 0;
+  const cap = discCap();
+  const isAdmin = me && me.role==='admin';
+  const reason = coState.reasonPreset==='Other (type below)' || !coState.reasonPreset
+    ? (coState.reasonText||'').trim()
+    : coState.reasonPreset;
+  return {gross,amt,pct,cap,isAdmin,overCap:(!isAdmin && pct>cap), reason, needsReason:(amt>0 && !reason)};
+}
 
-function mapSettings(d){ return d? {shopName:d.shop_name,currency:d.currency,legalName:d.legal_name||'',gstin:d.gstin||'',address:d.address||'',state:d.state||'',phone:d.phone||'',fssai:d.fssai||'',invoicePrefix:d.invoice_prefix||'GMW',gstRate:d.gst_rate!=null?Number(d.gst_rate):5,orderTypeOn:d.order_type_on!==false} : {...DEF_SETTINGS}; }
+function mapSettings(d){ return d? {shopName:d.shop_name,currency:d.currency,legalName:d.legal_name||'',gstin:d.gstin||'',address:d.address||'',state:d.state||'',phone:d.phone||'',fssai:d.fssai||'',invoicePrefix:d.invoice_prefix||'GMW',gstRate:d.gst_rate!=null?Number(d.gst_rate):5,orderTypeOn:d.order_type_on!==false,maxStaffDiscPct:d.max_staff_discount_pct!=null?Number(d.max_staff_discount_pct):15} : {...DEF_SETTINGS}; }
 
 async function loadAll(){
   const since=new Date(Date.now()-14*86400000).toISOString();
@@ -66,8 +89,14 @@ async function loadAll(){
   }
   if(orders.data){
     DB.orders=orders.data.map(o=>({id:o.id,invoiceNo:o.invoice_no,gross:Number(o.gross),taxable:Number(o.taxable),cgst:Number(o.cgst),sgst:Number(o.sgst),tax:Number(o.tax),roundOff:Number(o.round_off),total:Number(o.total),paymentMode:o.payment_mode,orderType:o.order_type,ts:new Date(o.created_at).getTime(),
+      status:o.status||'active', customerName:o.customer_name||'',
+      discount:Number(o.discount_amount||0), discountPct:o.discount_pct!=null?Number(o.discount_pct):0,
+      discountReason:o.discount_reason||'', discountBy:o.discount_by_name||'',
+      cancelledAt:o.cancelled_at?new Date(o.cancelled_at).getTime():0, cancelledBy:o.cancelled_by_name||'', cancelReason:o.cancel_reason||'',
       items:(o.order_items||[]).map(li=>({id:li.id,pid:li.product_id,name:li.product_name,qty:li.qty,unitPrice:Number(li.unit_price),extras:li.extras||[],lineTotal:Number(li.line_total)}))}));
-    DB.orderItems=[]; DB.orders.forEach(o=>o.items.forEach(li=>DB.orderItems.push({pid:li.pid,name:li.name,qty:li.qty,lineTotal:li.lineTotal,ts:o.ts})));
+    // Cancelled invoices stay visible in Orders but must never count as sales.
+    DB.orderItems=[]; DB.orders.filter(o=>o.status!=='cancelled').forEach(o=>o.items.forEach(li=>DB.orderItems.push({pid:li.pid,name:li.name,qty:li.qty,lineTotal:li.lineTotal,ts:o.ts})));
+    DB.activeOrders=DB.orders.filter(o=>o.status!=='cancelled');
   }
 }
 const extrasFor=pid=>DB.extras.filter(e=>e.active&&e.products.includes(pid));
@@ -125,6 +154,7 @@ const NAV=[
   {id:'stock',label:'Stock',icon:I.stock,roles:['admin','staff']},
   {id:'issues',label:'Issues',icon:I.issues,roles:['admin','staff']},
   {id:'analytics',label:'Analytics',icon:I.analytics,roles:['admin']},
+  {id:'reports',label:'Reports',icon:I.receipt,roles:['admin']},
   {id:'manage',label:'Admin',icon:I.manage,roles:['admin']}
 ];
 const navFor=()=>NAV.filter(n=>n.roles.includes(me.role));
@@ -139,7 +169,7 @@ async function go(v){view=v;renderNav();render();window.scrollTo({top:0,behavior
 /* ============================ RENDER ============================ */
 function render(){
   const el=document.getElementById('view');
-  const map={sell:viewSell,checkout:viewCheckout,orders:viewOrders,stock:viewStock,issues:viewIssues,analytics:viewAnalytics,manage:viewManage};
+  const map={sell:viewSell,checkout:viewCheckout,orders:viewOrders,stock:viewStock,issues:viewIssues,analytics:viewAnalytics,reports:viewReports,manage:viewManage};
   el.innerHTML=(map[view]||viewSell)();
   wire();
 }
@@ -208,64 +238,133 @@ function viewCheckout(){
       <div class="qty"><button class="icon-btn" data-cq="-" data-uid="${l.uid}" aria-label="Decrease">${I.minus}</button><b>${l.qty}</b><button class="icon-btn" data-cq="+" data-uid="${l.uid}" aria-label="Increase">${I.plus}</button></div>
       <div class="co-amt num">${money(lineGross(l))}</div>
       <button class="icon-btn" data-crm="${l.uid}" aria-label="Remove" style="width:32px;height:32px">${I.trash}</button></div>`).join('');
-  const gross=cartTotal(), rate=DB.settings.gstRate||5, total=Math.round(gross);
-  const taxable=+(total/(1+rate/100)).toFixed(2), tax=+(total-taxable).toFixed(2), cgst=+(tax/2).toFixed(2), sgst=+(tax-cgst).toFixed(2);
+
+  const d=discInfo(), rate=DB.settings.gstRate||5;
+  const total=Math.round(d.gross-d.amt);
+  const taxable=+(total/(1+rate/100)).toFixed(2), tax=+(total-taxable).toFixed(2);
+  const cgst=+(tax/2).toFixed(2), sgst=+(tax-cgst).toFixed(2);
   const otOn=DB.settings.orderTypeOn!==false;
+  const custom = coState.discMode==='amt' || !DISCOUNT_PRESETS.includes(Number(coState.discPct)||0);
+  const blocked = d.overCap || d.needsReason;
+
+  const discBlock=`
+    <div class="disc-box">
+      <div class="disc-head"><span class="lab" style="margin:0">Discount</span>
+        ${d.amt>0?`<span class="pill warn" style="font-size:10.5px">−${money(d.amt)} · ${d.pct}%</span>`:`<span class="help" style="margin:0">None</span>`}</div>
+      <div class="seg-inline seg-wrap" role="group" aria-label="Discount">
+        ${DISCOUNT_PRESETS.map(v=>`<button type="button" data-dp="${v}" aria-pressed="${!custom&&Number(coState.discPct)===v}">${v===0?'None':v+'%'}</button>`).join('')}
+        <button type="button" data-dp="custom" aria-pressed="${custom}">Custom</button>
+      </div>
+      ${custom?`<div class="form-grid" style="margin-top:10px">
+        <div><label class="lab" for="d-pct">Percent</label><div class="numcell"><input class="mini-input" id="d-pct" type="number" min="0" max="100" step="0.5" value="${coState.discMode==='pct'?(coState.discPct||''):''}" placeholder="0"><span class="unit">%</span></div></div>
+        <div><label class="lab" for="d-amt">or Amount</label><div class="numcell"><input class="mini-input" id="d-amt" type="number" min="0" step="1" value="${coState.discMode==='amt'?(coState.discAmt||''):''}" placeholder="0"><span class="unit">${curCode()}</span></div></div>
+      </div>`:''}
+      ${d.amt>0?`
+        <label class="lab" for="d-reason" style="margin-top:12px">Reason <span style="color:var(--crit)">*</span></label>
+        <select class="m-input" id="d-reason"><option value="">Choose a reason…</option>${REASON_PRESETS.map(r=>`<option value="${esc(r)}" ${coState.reasonPreset===r?'selected':''}>${esc(r)}</option>`).join('')}</select>
+        ${(coState.reasonPreset==='Other (type below)'||!coState.reasonPreset)?`<input class="m-input" id="d-reasontext" style="margin-top:8px" placeholder="Type the reason (required)" value="${esc(coState.reasonText||'')}">`:''}
+        <label class="lab" for="d-cust" style="margin-top:12px">Customer name <span class="help" style="margin:0;font-weight:400">(optional, prints on the bill)</span></label>
+        <input class="m-input" id="d-cust" placeholder="e.g. Mr Sharma" value="${esc(coState.customerName||'')}">
+      `:''}
+      ${d.overCap?`<div class="warn-msg" style="margin-top:10px">⚠ ${d.pct}% is over the ${d.cap}% staff limit. An owner has to sign in to approve this.</div>`:''}
+      ${d.needsReason&&!d.overCap?`<div class="warn-msg" style="margin-top:10px">⚠ Pick or type a reason — every discount is logged for the owner.</div>`:''}
+      ${d.amt>0&&!blocked?`<div class="help" style="margin-top:10px">Logged against <b>${esc((me&&me.name)||'you')}</b> and visible in Admin → Reports.</div>`:''}
+    </div>`;
+
   return `<div class="page-head"><div><h1>Review order</h1><div class="ph-sub">Confirm with the customer, then submit.</div></div><button class="btn-ghost" data-goto="sell">${I.plus} Add more</button></div>
     <div class="grid two-col">
-      <div class="card card-pad"><div class="section-title">Items · ${cartCount()}</div><div style="margin-top:8px">${rows}</div></div>
+      <div class="card card-pad"><div class="section-title">Items · ${cartCount()}</div><div style="margin-top:8px">${rows}</div>${discBlock}</div>
       <div class="card card-pad">
         ${otOn?`<label class="lab">Order type</label><div class="seg-inline" role="group" aria-label="Order type" style="margin-bottom:14px">${['dine-in','takeaway'].map(t=>`<button type="button" data-ot="${t}" aria-pressed="${coState.orderType===t}">${t==='dine-in'?'Dine-in':'Takeaway'}</button>`).join('')}</div>`:''}
         <label class="lab">Payment mode</label><div class="seg-inline" role="group" aria-label="Payment mode">${['Cash','UPI','Card'].map(m=>`<button type="button" data-pm="${m}" aria-pressed="${coState.paymentMode===m}">${m}</button>`).join('')}</div>
-        <div class="co-tot"><div><span>Taxable value</span><b class="num">${money(taxable)}</b></div><div><span>CGST @ ${rate/2}%</span><b class="num">${money(cgst)}</b></div><div><span>SGST @ ${rate/2}%</span><b class="num">${money(sgst)}</b></div><div class="co-grand"><span>Total payable</span><b class="num">${money(total)}</b></div></div>
+        <div class="co-tot">
+          ${d.amt>0?`<div><span>Subtotal</span><b class="num">${money(d.gross)}</b></div><div><span>Discount (${d.pct}%)</span><b class="num" style="color:var(--warn)">−${money(d.amt)}</b></div>`:''}
+          <div><span>Taxable value</span><b class="num">${money(taxable)}</b></div>
+          <div><span>CGST @ ${rate/2}%</span><b class="num">${money(cgst)}</b></div>
+          <div><span>SGST @ ${rate/2}%</span><b class="num">${money(sgst)}</b></div>
+          <div class="co-grand"><span>Total payable</span><b class="num">${money(total)}</b></div></div>
         <div style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <span class="help">Prices incl. GST ${rate}%</span>
-          <button class="btn btn-primary" id="submitOrder">${I.check} Submit &amp; generate bill</button>
+          <span class="help">Prices incl. GST ${rate}%${d.amt>0?' · GST charged on the discounted value':''}</span>
+          <button class="btn btn-primary" id="submitOrder" ${blocked?'disabled style="opacity:.5;cursor:not-allowed"':''}>${I.check} Submit &amp; generate bill</button>
         </div>
       </div>
     </div>`;
 }
 async function submitOrder(){
   if(!cart.length)return;
+  const d=discInfo();
+  if(d.overCap){toast(`${d.pct}% is over the ${d.cap}% staff limit — an owner must approve it`,I.issues);return;}
+  if(d.needsReason){toast('A reason is required for every discount',I.issues);return;}
   const payload={payment_mode:coState.paymentMode,order_type:(DB.settings.orderTypeOn!==false)?coState.orderType:null,
+    customer_name:(coState.customerName||'').trim()||null,
     items:cart.map(l=>({product_id:l.pid,qty:l.qty,extras:l.extras.map(e=>e.id)}))};
+  if(d.amt>0){
+    payload.discount_reason=d.reason;
+    if(coState.discMode==='amt') payload.discount_amount=d.amt; else payload.discount_pct=Number(coState.discPct)||0;
+  }
   const btn=document.getElementById('submitOrder'); if(btn){btn.disabled=true;btn.textContent='Submitting…';}
   const {data,error}=await sb.rpc('record_order',{p_payload:payload});
-  if(error){if(btn){btn.disabled=false;btn.innerHTML=I.check+' Submit &amp; generate bill';}toast(error.message||'Could not submit order',I.issues);return;}
-  cart=[]; await loadAll();
+  if(error){if(btn){btn.disabled=false;btn.innerHTML=I.check+' Submit & generate bill';}toast(error.message||'Could not submit order',I.issues);return;}
+  cart=[]; resetCheckoutState(); await loadAll();
   const ord=DB.orders.find(o=>o.id===data);
   view='sell'; renderNav(); render();
   if(ord) showReceipt(ord); else toast('Order recorded',I.check);
 }
 
 /* ---------- RECEIPT ---------- */
-function receiptHTML(o){
-  const s=DB.settings, rate=s.gstRate||5;
-  const lines=o.items.map(li=>{
-    const exLine=(li.extras&&li.extras.length)?`<div class="rc-ex">+ ${li.extras.map(e=>esc(e.name)+(Number(e.price)>0?` (${money(e.price)})`:'')).join(', ')}</div>`:'';
-    return `<tr><td>${esc(li.name)}${exLine}</td><td class="r num">${li.qty}</td><td class="r num">${money(li.unitPrice)}</td><td class="r num">${money(li.lineTotal)}</td></tr>`;}).join('');
-  const dt=new Date(o.ts);
-  return `<div id="receiptDoc" class="receipt">
-    <div class="rc-head">
-      <div class="rc-shop">${esc(s.legalName||s.shopName||'GM Wellness')}</div>
-      ${s.address?`<div class="rc-line">${esc(s.address)}</div>`:''}
-      ${s.state?`<div class="rc-line">${esc(s.state)}</div>`:''}
-      ${s.phone?`<div class="rc-line">Ph: ${esc(s.phone)}</div>`:''}
-      ${s.gstin?`<div class="rc-line"><b>GSTIN:</b> ${esc(s.gstin)}</div>`:'<div class="rc-line" style="color:#b00">Set GSTIN in Admin → Settings</div>'}
-      ${s.fssai?`<div class="rc-line">FSSAI: ${esc(s.fssai)}</div>`:''}
-    </div>
-    <div class="rc-title">TAX INVOICE</div>
-    <div class="rc-meta"><span>${esc(o.invoiceNo||'-')}</span><span>${dt.toLocaleDateString('en-IN')} ${dt.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span></div>
-    <div class="rc-meta"><span>${o.orderType?('Type: '+o.orderType):''}</span><span>${o.paymentMode?('Paid: '+o.paymentMode):''}</span></div>
-    <table class="rc-tbl"><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead><tbody>${lines}</tbody></table>
-    <div class="rc-tot">
+// Thermal printers need a real page width or the driver pads to A4 and wastes paper.
+function applyReceiptPage(fmt){
+  let st=document.getElementById('rcPageStyle');
+  if(!st){st=document.createElement('style');st.id='rcPageStyle';document.head.appendChild(st);}
+  st.textContent = fmt==='th80' ? '@media print{@page{size:80mm auto;margin:3mm}}'
+                 : fmt==='th58' ? '@media print{@page{size:58mm auto;margin:2mm}}'
+                 : '@media print{@page{size:auto;margin:10mm}}';
+}
+function rcTotalsHTML(o,rate){
+  return `<div class="rc-tot">
+      ${o.discount>0?`<div><span>Subtotal</span><b class="num">${money(o.gross)}</b></div><div><span>Discount${(o.discountPct&&Number.isInteger(Number(o.discountPct)))?` (${o.discountPct}%)`:''}</span><b class="num">−${money(o.discount)}</b></div>`:''}
       <div><span>Taxable value</span><b class="num">${money(o.taxable)}</b></div>
       <div><span>CGST @ ${rate/2}%</span><b class="num">${money(o.cgst)}</b></div>
       <div><span>SGST @ ${rate/2}%</span><b class="num">${money(o.sgst)}</b></div>
       ${Math.abs(o.roundOff)>=0.005?`<div><span>Round off</span><b class="num">${money(o.roundOff)}</b></div>`:''}
       <div class="rc-grand"><span>Total</span><b class="num">${money(o.total)}</b></div>
+    </div>`;
+}
+function receiptHTML(o,fmt){
+  fmt=fmt||rcFmt;
+  const s=DB.settings, rate=s.gstRate||5, narrow=(fmt==='th58');
+  const exOf=li=>(li.extras&&li.extras.length)?li.extras.map(e=>esc(e.name)+(Number(e.price)>0?` (${money(e.price)})`:'')).join(', '):'';
+  // 58 mm is too narrow for a 4-column table, so items stack onto two short lines.
+  const lines=o.items.map(li=>{
+    const ex=exOf(li);
+    if(narrow){
+      return `<tr class="rc-n"><td colspan="2">${esc(li.name)}${ex?`<div class="rc-ex">+ ${ex}</div>`:''}</td></tr>
+        <tr class="rc-v"><td>${li.qty} &times; ${money(li.unitPrice)}</td><td class="r num">${money(li.lineTotal)}</td></tr>`;
+    }
+    return `<tr><td>${esc(li.name)}${ex?`<div class="rc-ex">+ ${ex}</div>`:''}</td><td class="r num">${li.qty}</td><td class="r num">${money(li.unitPrice)}</td><td class="r num">${money(li.lineTotal)}</td></tr>`;
+  }).join('');
+  const head = narrow
+    ? '<thead><tr><th>Item</th><th class="r">Amount</th></tr></thead>'
+    : '<thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead>';
+  const dt=new Date(o.ts);
+  return `<div id="receiptDoc" class="receipt ${fmt==='th80'?'th80':fmt==='th58'?'th58':''}">
+    <div class="rc-head">
+      <div class="rc-shop">${esc(s.legalName||s.shopName||'GM Wellness')}</div>
+      ${s.address?`<div class="rc-line">${esc(s.address)}</div>`:''}
+      ${s.state?`<div class="rc-line">${esc(s.state)}</div>`:''}
+      ${s.phone?`<div class="rc-line">Ph: ${esc(s.phone)}</div>`:''}
+      ${s.gstin?`<div class="rc-line"><b>GSTIN:</b> ${esc(s.gstin)}</div>`:'<div class="rc-line" style="color:#b00">Set GSTIN in Admin &rarr; Settings</div>'}
+      ${s.fssai?`<div class="rc-line">FSSAI: ${esc(s.fssai)}</div>`:''}
     </div>
-    <div class="rc-foot">SAC 9963 · Prices inclusive of GST @ ${rate}%<br>
+    <div class="rc-title">TAX INVOICE</div>
+    ${o.status==='cancelled'?'<div class="rc-cancel">CANCELLED</div>':''}
+    <div class="rc-meta"><span>${esc(o.invoiceNo||'-')}</span><span>${dt.toLocaleDateString('en-IN')} ${dt.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span></div>
+    <div class="rc-meta"><span>${o.orderType?('Type: '+esc(o.orderType)):''}</span><span>${o.paymentMode?('Paid: '+esc(o.paymentMode)):''}</span></div>
+    ${o.customerName?`<div class="rc-meta"><span>Customer: ${esc(o.customerName)}</span></div>`:''}
+    <table class="rc-tbl">${head}<tbody>${lines}</tbody></table>
+    ${rcTotalsHTML(o,rate)}
+    ${o.status==='cancelled'?`<div class="rc-cancelnote">Cancelled${o.cancelledBy?' by '+esc(o.cancelledBy):''}${o.cancelledAt?' on '+new Date(o.cancelledAt).toLocaleString('en-IN'):''}${o.cancelReason?' — '+esc(o.cancelReason):''}. Not a valid tax document.</div>`:''}
+    <div class="rc-foot">SAC 9963 &middot; Prices inclusive of GST @ ${rate}%<br>
       This is a computer-generated invoice and does not require a signature.<br>
       ${s.state?('Subject to '+esc(s.state)+' jurisdiction. '):''}Goods once sold are not returnable.<br>
       <b>Thank you &amp; see you again!</b></div>
@@ -273,35 +372,67 @@ function receiptHTML(o){
 }
 function showReceipt(o){
   const root=document.getElementById('modalRoot');
+  const seg=()=>Object.keys(RC_FORMATS).map(k=>`<button type="button" data-rcf="${k}" aria-pressed="${rcFmt===k}">${RC_FORMATS[k]}</button>`).join('');
+  function paint(){
+    const body=document.getElementById('rcBody');
+    if(body) body.innerHTML=receiptHTML(o);
+    root.querySelectorAll('[data-rcf]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.rcf===rcFmt));
+    applyReceiptPage(rcFmt);
+  }
   root.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="Receipt">
-    <div class="modal-body" style="padding:16px">${receiptHTML(o)}</div>
+    <div class="modal-body" style="padding:16px">
+      <div class="rc-fmtbar"><span class="lab" style="margin:0">Paper</span><div class="seg-inline" role="group" aria-label="Bill format">${seg()}</div></div>
+      <div id="rcBody">${receiptHTML(o)}</div>
+    </div>
     <div class="modal-foot"><button class="btn-ghost" id="rcClose">Close</button><button class="btn-ghost" id="rcPdf">${I.download} PDF</button><button class="btn btn-primary" id="rcPrint">${I.receipt} Print / Save PDF</button></div>
   </div></div>`;
-  const close=()=>root.innerHTML='';
+  const close=()=>{root.innerHTML='';applyReceiptPage('a4');};
   document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
   document.getElementById('rcClose').onclick=close;
   document.getElementById('rcPrint').onclick=()=>window.print();
   document.getElementById('rcPdf').onclick=()=>downloadReceiptPDF(o);
+  root.querySelectorAll('[data-rcf]').forEach(b=>b.onclick=()=>{rcFmt=b.dataset.rcf;rcFmtSet(rcFmt);paint();});
+  applyReceiptPage(rcFmt);
 }
-function downloadReceiptPDF(o){
+function downloadReceiptPDF(o,fmt){
+  fmt=fmt||rcFmt;
   try{
     const s=DB.settings, rate=s.gstRate||5; const jsPDF=window.jspdf&&window.jspdf.jsPDF;
     if(!jsPDF){window.print();return;}
     const M=n=>curCode()==='INR'?('Rs '+Math.round(n).toLocaleString('en-IN')):money(n);
-    const doc=new jsPDF({unit:'pt',format:[300,820]}); let y=28; const L=16, R=284;
-    const line=(t,opt={})=>{doc.setFont('helvetica',opt.b?'bold':'normal');doc.setFontSize(opt.s||10);doc.text(String(t),opt.c?150:(opt.right?R:L),y,{align:opt.c?'center':(opt.right?'right':'left')});y+=(opt.s||10)+4;};
-    const rowLR=(l,r,b)=>{doc.setFont('helvetica',b?'bold':'normal');doc.setFontSize(10);doc.text(String(l),L,y);doc.text(String(r),R,y,{align:'right'});y+=15;};
-    doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(s.legalName||s.shopName||'GM Wellness',150,y,{align:'center'});y+=18;
-    if(s.address){line(s.address,{c:true,s:8});} if(s.state){line(s.state,{c:true,s:8});}
-    if(s.gstin){line('GSTIN: '+s.gstin,{c:true,s:8});} if(s.fssai){line('FSSAI: '+s.fssai,{c:true,s:8});}
+    // Page width in points: 58 mm = 164 pt, 80 mm = 227 pt, slip = 300 pt.
+    const W = fmt==='th58'?164:fmt==='th80'?227:300;
+    const pad = fmt==='th58'?8:fmt==='th80'?12:16;
+    const sc = fmt==='th58'?0.82:fmt==='th80'?0.92:1;
+    const doc=new jsPDF({unit:'pt',format:[W,820]});
+    let y=Math.round(28*sc); const L=pad, R=W-pad, C=W/2;
+    const fs=n=>Math.max(6,Math.round(n*sc*10)/10);
+    const line=(t,opt={})=>{doc.setFont('helvetica',opt.b?'bold':'normal');const z=fs(opt.s||10);doc.setFontSize(z);
+      const txt=doc.splitTextToSize(String(t),R-L);
+      doc.text(txt,opt.c?C:(opt.right?R:L),y,{align:opt.c?'center':(opt.right?'right':'left')});y+=txt.length*(z+3)+2;};
+    const rowLR=(l,r,b)=>{doc.setFont('helvetica',b?'bold':'normal');const z=fs(10);doc.setFontSize(z);
+      const rw=doc.getTextWidth(String(r));
+      const lt=doc.splitTextToSize(String(l),Math.max(20,(R-L)-rw-8));
+      doc.text(lt,L,y); doc.text(String(r),R,y,{align:'right'}); y+=lt.length*(z+4)+1;};
+    doc.setFont('helvetica','bold');doc.setFontSize(fs(13));
+    doc.text(doc.splitTextToSize(s.legalName||s.shopName||'GM Wellness',R-L),C,y,{align:'center'});y+=Math.round(18*sc);
+    if(s.address) line(s.address,{c:true,s:8});
+    if(s.state) line(s.state,{c:true,s:8});
+    if(s.gstin) line('GSTIN: '+s.gstin,{c:true,s:8});
+    if(s.fssai) line('FSSAI: '+s.fssai,{c:true,s:8});
     y+=4; line('TAX INVOICE',{c:true,b:true,s:11});
     const dt=new Date(o.ts); rowLR(o.invoiceNo||'-', dt.toLocaleDateString('en-IN'));
     rowLR((o.orderType||''),(o.paymentMode?('Paid: '+o.paymentMode):''));
-    y+=2; doc.setLineWidth(0.5); doc.line(L,y,R,y); y+=14;
+    if(o.customerName) rowLR('Customer', o.customerName);
+    if(o.status==='cancelled') line('*** CANCELLED ***',{c:true,b:true,s:11});
+    y+=2; doc.setLineWidth(0.5); doc.line(L,y,R,y); y+=13;
     rowLR('Item','Amt',true);
     o.items.forEach(li=>{ rowLR(li.qty+'x '+li.name, M(li.lineTotal));
-      if(li.extras&&li.extras.length){doc.setFontSize(8);doc.setFont('helvetica','italic');doc.text('+ '+li.extras.map(e=>e.name).join(', '),L+8,y);y+=12;doc.setFont('helvetica','normal');}});
-    y+=2; doc.line(L,y,R,y); y+=14;
+      if(li.extras&&li.extras.length){const z=fs(8);doc.setFontSize(z);doc.setFont('helvetica','italic');
+        const t=doc.splitTextToSize('+ '+li.extras.map(e=>e.name).join(', '),R-L-8);
+        doc.text(t,L+6,y);y+=t.length*(z+2)+1;doc.setFont('helvetica','normal');}});
+    y+=2; doc.line(L,y,R,y); y+=13;
+    if(o.discount>0){ rowLR('Subtotal', M(o.gross)); rowLR('Discount'+((o.discountPct&&Number.isInteger(Number(o.discountPct)))?' ('+o.discountPct+'%)':''), '-'+M(o.discount)); }
     rowLR('Taxable', M(o.taxable)); rowLR('CGST @'+(rate/2)+'%', M(o.cgst)); rowLR('SGST @'+(rate/2)+'%', M(o.sgst));
     if(Math.abs(o.roundOff)>=0.005) rowLR('Round off', M(o.roundOff));
     rowLR('TOTAL', M(o.total), true);
@@ -320,20 +451,25 @@ function viewOrders(){
   const q=orderQuery.trim().toLowerCase();
   const list=DB.orders.filter(o=>!q||(o.invoiceNo||'').toLowerCase().includes(q)||o.items.some(li=>li.name.toLowerCase().includes(q)));
   const rows=list.map(o=>{
-    const canRev=me.role==='admin'||o.ts>now-DAY;
+    const dead=o.status==='cancelled';
+    const canRev=!dead&&(me.role==='admin'||o.ts>now-DAY);
     const items=o.items.map(li=>`${li.qty}× ${esc(li.name)}`).join(', ');
-    return `<tr><td><b>${esc(o.invoiceNo||'-')}</b><div style="font-size:11.5px;color:var(--ink-faint)">${esc(items)}</div></td>
+    return `<tr${dead?' class="row-void"':''}><td><b>${esc(o.invoiceNo||'-')}</b>${dead?' <span class="pill crit" style="font-size:10px">CANCELLED</span>':''}${o.discount>0?` <span class="pill warn" style="font-size:10px">−${money(o.discount)}</span>`:''}
+        <div style="font-size:11.5px;color:var(--ink-faint)">${esc(items)}${o.customerName?' · '+esc(o.customerName):''}</div>
+        ${dead?`<div style="font-size:11px;color:var(--crit)">${esc(o.cancelReason||'Cancelled')}${o.cancelledBy?' · '+esc(o.cancelledBy):''}</div>`:''}</td>
       <td style="font-size:12.5px;color:var(--ink-soft);white-space:nowrap">${timeAgo(o.ts)}</td>
       <td class="r"><span class="pill neutral" style="font-size:10.5px">${esc(o.paymentMode||'-')}</span></td>
       <td class="r num"><b>${money(o.total)}</b></td>
-      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button><button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>${I.undo} Reverse</button></div></td></tr>`;
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button><button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>${I.undo} ${dead?'Cancelled':'Cancel'}</button></div></td></tr>`;
   }).join('');
-  const rev14=DB.orders.reduce((a,o)=>a+o.total,0);
-  return `<div class="page-head"><div><h1>Orders</h1><div class="ph-sub">Last 14 days · ${DB.orders.length} orders · ${money(rev14)}</div></div></div>
+  const live=DB.orders.filter(o=>o.status!=='cancelled');
+  const rev14=live.reduce((a,o)=>a+o.total,0);
+  const voidN=DB.orders.length-live.length;
+  return `<div class="page-head"><div><h1>Orders</h1><div class="ph-sub">Last 14 days · ${live.length} orders · ${money(rev14)}${voidN?` · ${voidN} cancelled`:''}</div></div></div>
     <div class="card card-pad" style="margin-bottom:14px"><input class="m-input" id="orderSearch" placeholder="Search invoice number or item…" value="${esc(orderQuery)}"></div>
     <div class="card"><div class="tbl-wrap"><table><thead><tr><th>Invoice &amp; items</th><th>When</th><th class="r">Paid</th><th class="r">Total</th><th class="r">Actions</th></tr></thead>
       <tbody>${rows||'<tr><td colspan="5" class="empty">No orders yet.</td></tr>'}</tbody></table></div></div>
-    <p class="help" style="margin-top:12px">Open any bill to reprint. Reverse restores stock &amp; removes the order (within 24 h for staff; anytime for admins).</p>`;
+    <p class="help" style="margin-top:12px">Open any bill to reprint. Cancelling restores stock and marks the invoice CANCELLED with your reason — the invoice number is kept so the GST sequence has no gaps (within 24 h for staff; anytime for admins).</p>`;
 }
 
 /* ---------- STOCK ---------- */
@@ -392,8 +528,9 @@ function viewAnalytics(){
   const DAY=86400000,now=Date.now();
   const items=DB.orderItems;
   const totalCups=items.reduce((a,i)=>a+i.qty,0);
-  const totalRev=DB.orders.reduce((a,o)=>a+o.total,0);
-  const ordersCount=DB.orders.length;
+  const live=DB.orders.filter(o=>o.status!=='cancelled');
+  const totalRev=live.reduce((a,o)=>a+o.total,0);
+  const ordersCount=live.length;
   const aov=ordersCount?totalRev/ordersCount:0;
   const lowItems=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').sort((a,b)=>ratio(a)-ratio(b));
   const lowCount=lowItems.length; const lowNames=lowItems.map(x=>x.name);
@@ -420,6 +557,194 @@ function viewAnalytics(){
       <div class="card card-pad"><div class="section-title">Daily volume</div><div class="section-sub">Cups sold per day (today highlighted).</div>${totalCups?`<div class="cols" role="img" aria-label="Daily cups sold over 14 days">${cols}</div>`:emptyChart}</div>
     </div>
     <div class="card card-pad"><div class="section-title">Stock situation</div><div class="section-sub">Coffees' worth remaining — lowest first. Colour shows status.</div><div class="hbars">${health}</div></div>`;
+}
+
+function cancelOrderModal(id){
+  const o=DB.orders.find(x=>x.id===id); if(!o) return;
+  const presets=['Customer changed their mind','Wrong item rung up','Drink remade','Payment failed','Duplicate bill','Other (type below)'];
+  openModal({title:'Cancel invoice '+(o.invoiceNo||''),confirmLabel:'Cancel invoice',danger:true,
+    body:`<p style="margin:0 0 14px;color:var(--ink-soft);font-size:14.5px">Stock goes back and the invoice is marked <b>CANCELLED</b>. The invoice number and its record are kept, so your GST sequence stays unbroken and the owner can see what happened.</p>
+      <label class="lab" for="cx-preset">Reason <span style="color:var(--crit)">*</span></label>
+      <select class="m-input" id="cx-preset"><option value="">Choose a reason…</option>${presets.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select>
+      <input class="m-input" id="cx-text" style="margin-top:8px" placeholder="More detail (required if you picked Other)">`,
+    onConfirm:root=>{
+      const sel=root.querySelector('#cx-preset').value, txt=root.querySelector('#cx-text').value.trim();
+      const reason = (!sel||sel==='Other (type below)') ? txt : (txt?sel+' — '+txt:sel);
+      if(!reason){toast('A reason is required to cancel an invoice',I.issues);return false;}
+      (async()=>{const {error}=await sb.rpc('cancel_order',{p_order_id:id,p_reason:reason});
+        if(error){toast(error.message||'Could not cancel',I.issues);return;}
+        await loadAll();render();toast('Invoice cancelled · stock restored',I.undo);})();
+    }});
+}
+
+/* ---------- REPORTS (GST filing) ---------- */
+// Orders are only cached for 14 days in DB.orders, so filing reports query their own range.
+let rep={preset:'thismonth',from:'',to:'',rows:null,loading:false,err:''};
+
+function fyBounds(d){ // Indian financial year: 1 Apr - 31 Mar
+  const y=d.getMonth()>=3?d.getFullYear():d.getFullYear()-1;
+  return [new Date(y,3,1), new Date(y+1,2,31)];
+}
+const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function presetRange(p){
+  const n=new Date(), t=new Date(n.getFullYear(),n.getMonth(),n.getDate());
+  if(p==='today')      return [t,t];
+  if(p==='yesterday'){ const y=new Date(t-86400000); return [y,y]; }
+  if(p==='last7')      return [new Date(t-6*86400000), t];
+  if(p==='thismonth')  return [new Date(n.getFullYear(),n.getMonth(),1), t];
+  if(p==='lastmonth'){ const s=new Date(n.getFullYear(),n.getMonth()-1,1); return [s,new Date(n.getFullYear(),n.getMonth(),0)]; }
+  if(p==='fy'){ const [a,b]=fyBounds(n); return [a, b>t?t:b]; }
+  return [t,t];
+}
+function repRange(){
+  if(rep.preset==='custom'&&rep.from&&rep.to) return [new Date(rep.from+'T00:00:00'), new Date(rep.to+'T00:00:00')];
+  return presetRange(rep.preset);
+}
+async function loadReport(){
+  const [a,b]=repRange();
+  if(b<a){ rep.err='End date is before the start date.'; rep.rows=[]; render(); return; }
+  rep.loading=true; rep.err=''; render();
+  const from=new Date(a.getFullYear(),a.getMonth(),a.getDate()).toISOString();
+  const to=new Date(b.getFullYear(),b.getMonth(),b.getDate()+1).toISOString(); // exclusive
+  const {data,error}=await sb.from('orders').select('*').gte('created_at',from).lt('created_at',to).order('created_at');
+  rep.loading=false;
+  if(error){ rep.err=error.message||'Could not load orders.'; rep.rows=[]; render(); return; }
+  rep.rows=(data||[]).map(o=>({
+    id:o.id, invoiceNo:o.invoice_no, ts:new Date(o.created_at).getTime(),
+    gross:Number(o.gross||0), taxable:Number(o.taxable||0), cgst:Number(o.cgst||0), sgst:Number(o.sgst||0),
+    tax:Number(o.tax||0), roundOff:Number(o.round_off||0), total:Number(o.total||0),
+    paymentMode:o.payment_mode||'-', orderType:o.order_type||'',
+    // present only after the discounts migration; treated as 0 until then
+    discount:Number(o.discount_amount||0), discountPct:Number(o.discount_pct||0),
+    discountReason:o.discount_reason||'', discountBy:o.discount_by_name||'',
+    status:o.status||'active', customerName:o.customer_name||'',
+    cancelledBy:o.cancelled_by_name||'', cancelReason:o.cancel_reason||'',
+    cancelledAt:o.cancelled_at?new Date(o.cancelled_at).getTime():0
+  }));
+  render();
+}
+function repTotals(rows){
+  const t={n:rows.length,taxable:0,cgst:0,sgst:0,tax:0,round:0,total:0,disc:0,discN:0};
+  rows.forEach(o=>{t.taxable+=o.taxable;t.cgst+=o.cgst;t.sgst+=o.sgst;t.tax+=o.tax;t.round+=o.roundOff;t.total+=o.total;
+    if(o.discount>0){t.disc+=o.discount;t.discN++;}});
+  return t;
+}
+const money2=n=>`${curCode()==='INR'?'₹':''}${Number(n).toLocaleString(curLocale(),{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+
+function viewReports(){
+  const presets=[['today','Today'],['yesterday','Yesterday'],['last7','Last 7 days'],['thismonth','This month'],['lastmonth','Last month'],['fy','This FY'],['custom','Custom']];
+  const [a,b]=repRange();
+  const head=`<div class="page-head"><div><h1>Reports</h1><div class="ph-sub">GST summary for filing, payment reconciliation and the discount audit trail.</div></div><span class="pill neutral">${a.toLocaleDateString('en-IN')} – ${b.toLocaleDateString('en-IN')}</span></div>
+    <div class="card card-pad" style="margin-bottom:16px">
+      <div class="seg-inline seg-wrap" role="group" aria-label="Date range">${presets.map(([k,l])=>`<button type="button" data-rp="${k}" aria-pressed="${rep.preset===k}">${l}</button>`).join('')}</div>
+      ${rep.preset==='custom'?`<div class="form-grid" style="margin-top:12px;max-width:420px">
+        <div><label class="lab" for="rp-from">From</label><input class="m-input" id="rp-from" type="date" value="${esc(rep.from||ymd(a))}"></div>
+        <div><label class="lab" for="rp-to">To</label><input class="m-input" id="rp-to" type="date" value="${esc(rep.to||ymd(b))}"></div>
+      </div>`:''}
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary" id="rpRun">${I.analytics} Run report</button>
+        ${rep.rows&&rep.rows.length?`<button class="btn-ghost" id="rpCsv">${I.download} Export CSV</button><button class="btn-ghost" id="rpPrint">${I.receipt} Print summary</button>`:''}
+      </div>
+      ${rep.err?`<div class="warn-msg" style="margin-top:10px">${esc(rep.err)}</div>`:''}
+    </div>`;
+  if(rep.loading) return head+`<div class="card card-pad"><div class="empty">${I.analytics}<div>Loading orders…</div></div></div>`;
+  if(!rep.rows)   return head+`<div class="card card-pad"><div class="empty">${I.analytics}<div>Pick a range and hit <b>Run report</b>.</div></div></div>`;
+  if(!rep.rows.length) return head+`<div class="card card-pad"><div class="empty">${I.receipt}<div>No orders in this range.</div></div></div>`;
+
+  const all=rep.rows;
+  const rows=all.filter(o=>o.status!=='cancelled');
+  const voids=all.filter(o=>o.status==='cancelled');
+  if(!rows.length) return head+`<div class="card card-pad"><div class="empty">${I.receipt}<div>No live invoices in this range${voids.length?` (${voids.length} cancelled).`:'.'}</div></div></div>`;
+  const t=repTotals(rows), rate=DB.settings.gstRate||5;
+
+  // per payment mode
+  const byPm={}; rows.forEach(o=>{const k=o.paymentMode;(byPm[k]=byPm[k]||{n:0,total:0,taxable:0,tax:0});byPm[k].n++;byPm[k].total+=o.total;byPm[k].taxable+=o.taxable;byPm[k].tax+=o.tax;});
+  const pmRows=Object.entries(byPm).sort((x,y)=>y[1].total-x[1].total).map(([k,v])=>
+    `<tr><td><b>${esc(k)}</b></td><td class="r num">${v.n}</td><td class="r num">${money2(v.taxable)}</td><td class="r num">${money2(v.tax)}</td><td class="r num"><b>${money2(v.total)}</b></td></tr>`).join('');
+
+  // per day
+  const byDay={}; rows.forEach(o=>{const d=new Date(o.ts);const k=ymd(d);(byDay[k]=byDay[k]||{n:0,taxable:0,cgst:0,sgst:0,total:0,disc:0});
+    const v=byDay[k];v.n++;v.taxable+=o.taxable;v.cgst+=o.cgst;v.sgst+=o.sgst;v.total+=o.total;v.disc+=o.discount;});
+  const dayRows=Object.keys(byDay).sort().map(k=>{const v=byDay[k];
+    return `<tr><td style="white-space:nowrap">${new Date(k+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</td>
+      <td class="r num">${v.n}</td><td class="r num">${money2(v.taxable)}</td><td class="r num">${money2(v.cgst)}</td><td class="r num">${money2(v.sgst)}</td>
+      ${t.disc>0?`<td class="r num">${v.disc>0?money2(v.disc):'—'}</td>`:''}<td class="r num"><b>${money2(v.total)}</b></td></tr>`;}).join('');
+
+  // discount audit
+  const discRows=rows.filter(o=>o.discount>0).sort((x,y)=>y.ts-x.ts).map(o=>
+    `<tr><td><b>${esc(o.invoiceNo||'-')}</b><div style="font-size:11.5px;color:var(--ink-faint)">${new Date(o.ts).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</div></td>
+      <td class="r num">${money2(o.gross)}</td>
+      <td class="r"><span class="pill warn" style="font-size:10.5px">−${money2(o.discount)}${o.discountPct?` (${o.discountPct}%)`:''}</span></td>
+      <td class="r num"><b>${money2(o.total)}</b></td>
+      <td>${esc(o.discountBy||'—')}</td><td style="font-size:12px;color:var(--ink-soft)">${esc(o.discountReason||'—')}</td></tr>`).join('');
+  const discPct=t.total+t.disc>0?(t.disc/(t.total+t.disc)*100):0;
+
+  return head+`
+    <div class="grid kpi-grid" style="margin-bottom:16px">
+      <div class="card kpi"><div class="k-lab">${I.receipt} Taxable value</div><div class="k-val">${money2(t.taxable)}</div><div class="k-sub">${t.n} invoices</div></div>
+      <div class="card kpi"><div class="k-lab">${I.shield} CGST @ ${rate/2}%</div><div class="k-val">${money2(t.cgst)}</div><div class="k-sub">output tax</div></div>
+      <div class="card kpi"><div class="k-lab">${I.shield} SGST @ ${rate/2}%</div><div class="k-val">${money2(t.sgst)}</div><div class="k-sub">output tax</div></div>
+      <div class="card kpi"><div class="k-lab">${I.analytics} Invoice total</div><div class="k-val">${money2(t.total)}</div><div class="k-sub">collected incl. GST</div></div>
+    </div>
+    <div class="grid two-col" style="margin-bottom:16px">
+      <div class="card card-pad"><div class="section-title">By payment mode</div><div class="section-sub">Reconcile the till against UPI and card settlements.</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Mode</th><th class="r">Orders</th><th class="r">Taxable</th><th class="r">GST</th><th class="r">Total</th></tr></thead><tbody>${pmRows}</tbody></table></div></div>
+      <div class="card card-pad"><div class="section-title">GST summary</div><div class="section-sub">Figures for your GSTR-1 / GSTR-3B outward supplies (B2C).</div>
+        <div class="co-tot" style="margin-top:10px">
+          <div><span>Invoices</span><b class="num">${t.n}</b></div>
+          ${t.disc>0?`<div><span>Gross before discount</span><b class="num">${money2(t.total+t.disc)}</b></div><div><span>Discounts given</span><b class="num">−${money2(t.disc)}</b></div>`:''}
+          <div><span>Taxable value</span><b class="num">${money2(t.taxable)}</b></div>
+          <div><span>CGST @ ${rate/2}%</span><b class="num">${money2(t.cgst)}</b></div>
+          <div><span>SGST @ ${rate/2}%</span><b class="num">${money2(t.sgst)}</b></div>
+          ${Math.abs(t.round)>=0.005?`<div><span>Round off</span><b class="num">${money2(t.round)}</b></div>`:''}
+          <div class="co-grand"><span>Invoice value</span><b class="num">${money2(t.total)}</b></div>
+        </div>
+        <p class="help" style="margin-top:10px">Intra-state supply · place of supply <b>${esc(DB.settings.state||'— set in Admin → Settings')}</b> · SAC 9963 · rate ${rate}%.</p></div>
+    </div>
+    <div class="card card-pad" style="margin-bottom:16px"><div class="section-title">Day by day</div><div class="section-sub">Use this to tie each day's Z-total back to the filing.</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Date</th><th class="r">Orders</th><th class="r">Taxable</th><th class="r">CGST</th><th class="r">SGST</th>${t.disc>0?'<th class="r">Discount</th>':''}<th class="r">Total</th></tr></thead>
+        <tbody>${dayRows}</tbody>
+        <tfoot><tr><td><b>Total</b></td><td class="r num"><b>${t.n}</b></td><td class="r num"><b>${money2(t.taxable)}</b></td><td class="r num"><b>${money2(t.cgst)}</b></td><td class="r num"><b>${money2(t.sgst)}</b></td>${t.disc>0?`<td class="r num"><b>−${money2(t.disc)}</b></td>`:''}<td class="r num"><b>${money2(t.total)}</b></td></tr></tfoot></table></div></div>
+    <div class="card card-pad"><div class="section-title">Discount audit trail</div>
+      <div class="section-sub">Every discount given in this range, who gave it and why. ${t.discN?`<b>${t.discN}</b> of ${t.n} orders discounted · <b>${money2(t.disc)}</b> given away (${discPct.toFixed(1)}% of gross).`:''}</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Invoice</th><th class="r">Before</th><th class="r">Discount</th><th class="r">Charged</th><th>Given by</th><th>Reason</th></tr></thead>
+        <tbody>${discRows||'<tr><td colspan="6" class="empty">No discounts given in this range.</td></tr>'}</tbody></table></div></div>
+    ${voids.length?`<div class="card card-pad" style="margin-top:16px"><div class="section-title">Cancelled invoices</div>
+      <div class="section-sub"><b>${voids.length}</b> invoice${voids.length>1?'s':''} cancelled in this range, worth ${money2(voids.reduce((a,o)=>a+o.total,0))}. Excluded from every figure above; listed so the number sequence reconciles.</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Invoice</th><th class="r">Value</th><th>Cancelled by</th><th>Reason</th></tr></thead><tbody>
+        ${voids.sort((x,y)=>y.ts-x.ts).map(o=>`<tr class="row-void"><td><b>${esc(o.invoiceNo||'-')}</b><div style="font-size:11.5px;color:var(--ink-faint)">${new Date(o.ts).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</div></td>
+          <td class="r num">${money2(o.total)}</td><td>${esc(o.cancelledBy||'—')}</td><td style="font-size:12px;color:var(--ink-soft)">${esc(o.cancelReason||'—')}</td></tr>`).join('')}
+      </tbody></table></div></div>`:''}`;
+}
+function reportCSV(){
+  const rows=rep.rows||[]; if(!rows.length) return;
+  // Cancelled invoices are exported too (so the number sequence reconciles)
+  // but only live invoices are totalled.
+  const [a,b]=repRange(); const s=DB.settings, rate=s.gstRate||5;
+  const t=repTotals(rows.filter(o=>o.status!=='cancelled'));
+  const q=v=>`"${String(v==null?'':v).replace(/"/g,'""')}"`;
+  const L=[];
+  L.push([q(s.legalName||s.shopName||'GM Wellness')]);
+  L.push([q('GSTIN'),q(s.gstin||'')]);
+  L.push([q('Place of supply'),q(s.state||'')]);
+  L.push([q('Period'),q(a.toLocaleDateString('en-IN')+' to '+b.toLocaleDateString('en-IN'))]);
+  L.push([q('GST rate'),q(rate+'%')]);
+  L.push([]);
+  L.push(['Date','Invoice No','Status','Customer','Order type','Payment mode','Gross','Discount','Discount %','Discount reason','Discount by','Taxable','CGST','SGST','Round off','Invoice total','Cancelled by','Cancel reason'].map(q));
+  rows.forEach(o=>L.push([q(new Date(o.ts).toLocaleString('en-IN')),q(o.invoiceNo),q(o.status||'active'),q(o.customerName),q(o.orderType),q(o.paymentMode),
+    o.gross.toFixed(2),o.discount.toFixed(2),o.discountPct||'',q(o.discountReason),q(o.discountBy),
+    o.taxable.toFixed(2),o.cgst.toFixed(2),o.sgst.toFixed(2),o.roundOff.toFixed(2),o.total.toFixed(2),
+    q(o.cancelledBy),q(o.cancelReason)]));
+  L.push([]);
+  L.push([q('TOTAL (live invoices only)'),q(''),q(''),q(''),q(''),q(''),'','','','','',t.taxable.toFixed(2),t.cgst.toFixed(2),t.sgst.toFixed(2),t.round.toFixed(2),t.total.toFixed(2)]);
+  L.push([q('Discounts given'),t.disc.toFixed(2),q(t.discN+' of '+t.n+' orders')]);
+  const csv='﻿'+L.map(r=>r.join(',')).join('\r\n');
+  const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  const el=document.createElement('a'); el.href=url;
+  el.download=`GST-${(s.invoicePrefix||'GMW')}-${ymd(a)}_to_${ymd(b)}.csv`;
+  document.body.appendChild(el); el.click(); el.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+  toast('CSV exported',I.download);
 }
 
 /* ---------- ADMIN (Manage) ---------- */
@@ -550,8 +875,10 @@ function manageSettings(){
         <div><label class="lab" for="set-fssai">FSSAI (optional)</label><input class="m-input" id="set-fssai" value="${esc(s.fssai||'')}"></div>
         <div><label class="lab" for="set-prefix">Invoice prefix</label><input class="m-input" id="set-prefix" value="${esc(s.invoicePrefix||'GMW')}"></div>
         <div><label class="lab" for="set-rate">GST rate (%)</label><input class="m-input" id="set-rate" type="number" min="0" step="0.5" value="${s.gstRate}"></div>
+        <div><label class="lab" for="set-maxdisc">Max staff discount (%)</label><input class="m-input" id="set-maxdisc" type="number" min="0" max="100" step="1" value="${s.maxStaffDiscPct!=null?s.maxStaffDiscPct:15}"></div>
         <div><label class="lab" for="set-ot">Show Dine-in / Takeaway</label><select id="set-ot"><option value="1" ${s.orderTypeOn!==false?'selected':''}>Yes</option><option value="0" ${s.orderTypeOn===false?'selected':''}>No</option></select></div>
       </div>
+      <div class="help" style="margin-top:8px">Staff can discount up to the limit above; owners can go higher. Every discount is logged with who, how much and why — see <b>Reports</b>.</div>
       <div class="help" style="margin-top:8px">Invoice numbers run like <b>${esc(s.invoicePrefix||'GMW')}/2026-27/0001</b> and reset each financial year (Apr–Mar). GST 5% is standard for a standalone cafe.</div>
       <button class="btn btn-primary" id="saveSettings" style="margin-top:16px">${I.check} Save settings</button>
     </div>
@@ -580,12 +907,29 @@ function wire(){
   document.querySelectorAll('[data-crm]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.uid!==b.dataset.crm);render();});
   document.querySelectorAll('[data-ot]').forEach(b=>b.onclick=()=>{coState.orderType=b.dataset.ot;render();});
   document.querySelectorAll('[data-pm]').forEach(b=>b.onclick=()=>{coState.paymentMode=b.dataset.pm;render();});
+  // discount controls
+  document.querySelectorAll('[data-dp]').forEach(b=>b.onclick=()=>{
+    const v=b.dataset.dp;
+    if(v==='custom'){coState.discMode='pct';if(DISCOUNT_PRESETS.includes(Number(coState.discPct)||0))coState.discPct='';}
+    else {coState.discMode='pct';coState.discPct=Number(v);coState.discAmt=0;if(Number(v)===0){coState.reasonPreset='';coState.reasonText='';}}
+    render();});
+  const dpct=document.getElementById('d-pct');
+  if(dpct) dpct.onchange=()=>{coState.discMode='pct';coState.discPct=parseFloat(dpct.value)||0;coState.discAmt=0;render();};
+  const damt=document.getElementById('d-amt');
+  if(damt) damt.onchange=()=>{coState.discMode='amt';coState.discAmt=parseFloat(damt.value)||0;render();};
+  const dre=document.getElementById('d-reason');
+  if(dre) dre.onchange=()=>{coState.reasonPreset=dre.value;render();};
+  const drt=document.getElementById('d-reasontext');
+  if(drt) drt.oninput=()=>{const was=coState.reasonText;coState.reasonText=drt.value;
+    // re-render only when the blocked/unblocked state actually flips
+    if((!was)!==(!drt.value.trim())){const p=drt.selectionStart;render();const el=document.getElementById('d-reasontext');if(el){el.focus();el.setSelectionRange(p,p);}}};
+  const dcu=document.getElementById('d-cust');
+  if(dcu) dcu.oninput=()=>{coState.customerName=dcu.value;};
   const so=document.getElementById('submitOrder');if(so)so.onclick=submitOrder;
   // orders history
   const osrch=document.getElementById('orderSearch');if(osrch)osrch.oninput=()=>{orderQuery=osrch.value;render();const el=document.getElementById('orderSearch');if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}};
   document.querySelectorAll('[data-viewrcpt]').forEach(b=>b.onclick=()=>{const o=DB.orders.find(x=>x.id===b.dataset.viewrcpt);if(o)showReceipt(o);});
-  document.querySelectorAll('[data-revorder]').forEach(b=>{if(b.disabled)return;b.onclick=()=>{const id=b.dataset.revorder;
-    confirmModal('Reverse this order?','Stock will be added back and the order removed from your records.','Reverse',async()=>{const {error}=await sb.rpc('reverse_order',{p_order_id:id});if(error){toast(error.message||'Could not reverse',I.issues);return;}await loadAll();render();toast('Order reversed',I.undo);},true);};});
+  document.querySelectorAll('[data-revorder]').forEach(b=>{if(b.disabled)return;b.onclick=()=>cancelOrderModal(b.dataset.revorder);});
 
   const form=document.getElementById('issueForm');
   if(form){let mode='coffees';const hint=document.getElementById('ii-unithint'),prev=document.getElementById('ii-preview'),sel=document.getElementById('ii-ing'),amt=document.getElementById('ii-amt');
@@ -595,6 +939,20 @@ function wire(){
     form.querySelectorAll('[data-mode]').forEach(btn=>btn.onclick=()=>{mode=btn.dataset.mode;form.querySelectorAll('[data-mode]').forEach(b=>b.setAttribute('aria-pressed',b===btn));refresh();});
     sel.onchange=refresh;amt.oninput=refresh;refresh();
     form.onsubmit=e=>{e.preventDefault();const a=parseFloat(amt.value);if(!a||a<=0){amt.focus();return;}logIssue(sel.value,a,mode,document.getElementById('ii-reason').value.trim()||'No reason given');};}
+
+  // reports
+  document.querySelectorAll('[data-rp]').forEach(b=>b.onclick=()=>{rep.preset=b.dataset.rp;rep.rows=null;rep.err='';
+    if(rep.preset==='custom'&&!rep.from){const [a,b2]=presetRange('thismonth');rep.from=ymd(a);rep.to=ymd(b2);}
+    render(); if(rep.preset!=='custom') loadReport();});
+  const rpf=document.getElementById('rp-from'); if(rpf) rpf.onchange=()=>{rep.from=rpf.value;rep.rows=null;};
+  const rpt=document.getElementById('rp-to');   if(rpt) rpt.onchange=()=>{rep.to=rpt.value;rep.rows=null;};
+  const rpr=document.getElementById('rpRun');   if(rpr) rpr.onclick=loadReport;
+  const rpc=document.getElementById('rpCsv');   if(rpc) rpc.onclick=reportCSV;
+  const rpp=document.getElementById('rpPrint'); if(rpp) rpp.onclick=()=>{
+    document.body.classList.add('print-report');
+    const done=()=>{document.body.classList.remove('print-report');window.removeEventListener('afterprint',done);};
+    window.addEventListener('afterprint',done); setTimeout(done,3000);
+    window.print();};
 
   document.querySelectorAll('[data-mtab]').forEach(b=>b.onclick=()=>{manageTab=b.dataset.mtab;render();});
   document.querySelectorAll('tr[data-ing] .mini-input').forEach(inp=>inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();updateSupplyRow(inp.closest('tr').dataset.ing);}}));
@@ -628,11 +986,12 @@ function wire(){
         legal_name:g('set-legal').trim(), gstin:g('set-gstin').trim(), address:g('set-addr').trim(),
         state:g('set-state').trim(), phone:g('set-phone').trim(), fssai:g('set-fssai').trim(),
         invoice_prefix:g('set-prefix').trim()||'GMW', gst_rate:parseFloat(g('set-rate'))||5,
-        order_type_on:g('set-ot')==='1'};
+        order_type_on:g('set-ot')==='1',
+        max_staff_discount_pct:Math.max(0,Math.min(100,parseFloat(g('set-maxdisc'))||0))};
       const {data,error}=await sb.from('shop_settings').update(rec).eq('id',1).select('id');
       if(error){toast('Could not save settings: '+error.message,I.issues);return;}
       if(!data||!data.length){toast('Not saved — admin only',I.issues);return;}
-      DB.settings=mapSettings({shop_name:rec.shop_name,currency:rec.currency,legal_name:rec.legal_name,gstin:rec.gstin,address:rec.address,state:rec.state,phone:rec.phone,fssai:rec.fssai,invoice_prefix:rec.invoice_prefix,gst_rate:rec.gst_rate,order_type_on:rec.order_type_on});
+      DB.settings=mapSettings({shop_name:rec.shop_name,currency:rec.currency,legal_name:rec.legal_name,gstin:rec.gstin,address:rec.address,state:rec.state,phone:rec.phone,fssai:rec.fssai,invoice_prefix:rec.invoice_prefix,gst_rate:rec.gst_rate,order_type_on:rec.order_type_on,max_staff_discount_pct:rec.max_staff_discount_pct});
       setShopName();render();toast('Settings saved',I.check);};
   }
   const exBtn=document.getElementById('exportCfg');if(exBtn)exBtn.onclick=exportConfig;
@@ -656,12 +1015,23 @@ async function changeRole(id,role,selEl){
   render();
   toast(`${u.name} is now ${role==='admin'?'an Admin':'Staff'}`,I.check);
 }
+// The admin-users Edge Function is the usual suspect when Team actions fail,
+// so say WHICH failure it is instead of a generic "could not".
+function fnErr(error,what){
+  const raw=(error&&(error.message||String(error)))||'';
+  let hint=raw;
+  if(/Failed to send|fetch|NetworkError|Load failed/i.test(raw))
+    hint='the admin-users function is not deployed (or is blocking the browser preflight). Deploy it in Supabase → Edge Functions with "Verify JWT" OFF.';
+  else if(/non-2xx|FunctionsHttpError/i.test(raw))
+    hint='the function replied with an error - check its logs in Supabase → Edge Functions → admin-users.';
+  toast(`Could not ${what}: ${hint}`,I.issues);
+}
 function removeUser(id){
   const u=DB.users.find(x=>x.id===id);if(!u)return;
   if(u.role==='admin'&&adminCount()<=1){toast('You need at least one admin',I.shield);return;}
   confirmModal('Remove team member?',`"${esc(u.name)}" (${esc(u.email)}) will lose access.`,'Remove',async()=>{
     const {error}=await sb.functions.invoke('admin-users',{body:{action:'delete',userId:id}});
-    if(error){toast('Could not remove member',I.issues);return;}await loadAll();render();toast('Member removed',I.trash);
+    if(error){fnErr(error,'remove member');return;}await loadAll();render();toast('Member removed',I.trash);
   },true);
 }
 function addUserModal(){
@@ -681,7 +1051,7 @@ function addUserModal(){
       if(DB.users.some(u=>u.email===email)){toast('That email is already in use',I.issues);return false;}
       if(!pass||pass.length<6){toast('Password needs 6+ characters',I.issues);return false;}
       sb.functions.invoke('admin-users',{body:{action:'create',email,password:pass,name,role}}).then(({error})=>{
-        if(error){toast('Could not add member',I.issues);}else{loadAll().then(render);toast(`${name} added`,I.check);}});
+        if(error){fnErr(error,'add member');}else{loadAll().then(render);toast(`${name} added`,I.check);}});
     }});
 }
 function resetPwModal(id){
@@ -690,7 +1060,7 @@ function resetPwModal(id){
     body:`<div class="field"><label class="lab" for="rp-pass">New password</label><input class="m-input" id="rp-pass" value=""></div>
       <div class="help">Minimum 6 characters.</div>`,
     onConfirm:root=>{const pass=root.querySelector('#rp-pass').value;if(!pass||pass.length<6){toast('Password needs 6+ characters',I.issues);return false;}
-      sb.functions.invoke('admin-users',{body:{action:'setPassword',userId:id,password:pass}}).then(({error})=>{if(error){toast('Could not update password',I.issues);}else{toast('Password updated',I.check);}});}});
+      sb.functions.invoke('admin-users',{body:{action:'setPassword',userId:id,password:pass}}).then(({error})=>{if(error){fnErr(error,'update password');}else{toast('Password updated',I.check);}});}});
 }
 
 /* ---------- update a supply row (all fields at once) ---------- */
@@ -867,7 +1237,9 @@ function toggleTheme(){const cur=document.documentElement.getAttribute('data-the
 
 /* ============================ AUTH ============================ */
 function setUserChrome(){
-  const initial=me.name[0].toUpperCase();
+  // A profile row with a blank name used to crash the whole app right after login.
+  if(!me.name||!String(me.name).trim()) me.name=me.email||'User';
+  const initial=String(me.name).trim()[0].toUpperCase();
   document.getElementById('sbAvatar').textContent=initial;document.getElementById('tbAvatar').textContent=initial;
   document.getElementById('sbWho').textContent=me.name;
   document.getElementById('sbRole').textContent=me.role==='admin'?'Owner · Admin':'Barista · Staff';
@@ -885,7 +1257,7 @@ async function signIn(){
 async function afterLogin(){
   const {data:{user}}=await sb.auth.getUser();if(!user)return;
   const {data:prof}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
-  me={id:user.id,name:prof?prof.name:user.email,role:prof?prof.role:'staff'};
+  me={id:user.id,email:user.email,name:(prof&&prof.name&&String(prof.name).trim())||user.email||'User',role:(prof&&prof.role)||'staff'};
   document.getElementById('login').style.display='none';document.getElementById('app').classList.add('on');
   await loadAll();setUserChrome();setShopName();view='sell';renderNav();render();
 }
