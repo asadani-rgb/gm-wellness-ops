@@ -647,14 +647,14 @@ function viewReports(){
       </div>
       ${rep.err?`<div class="warn-msg" style="margin-top:10px">${esc(rep.err)}</div>`:''}
     </div>`;
-  if(rep.loading) return head+`<div class="card card-pad"><div class="empty">${I.analytics}<div>Loading orders…</div></div></div>`;
-  if(!rep.rows)   return head+`<div class="card card-pad"><div class="empty">${I.analytics}<div>Pick a range and hit <b>Run report</b>.</div></div></div>`;
-  if(!rep.rows.length) return head+`<div class="card card-pad"><div class="empty">${I.receipt}<div>No orders in this range.</div></div></div>`;
+  if(rep.loading) return head+`<div class="card card-pad"><div class="empty">Loading orders…</div></div>`;
+  if(!rep.rows)   return head+`<div class="card card-pad"><div class="empty">Pick a date range above, then hit <b>Run report</b>.</div></div>`;
+  if(!rep.rows.length) return head+`<div class="card card-pad"><div class="empty">No orders in this range.</div></div>`;
 
   const all=rep.rows;
   const rows=all.filter(o=>o.status!=='cancelled');
   const voids=all.filter(o=>o.status==='cancelled');
-  if(!rows.length) return head+`<div class="card card-pad"><div class="empty">${I.receipt}<div>No live invoices in this range${voids.length?` (${voids.length} cancelled).`:'.'}</div></div></div>`;
+  if(!rows.length) return head+`<div class="card card-pad"><div class="empty">No live invoices in this range${voids.length?` — ${voids.length} cancelled invoice${voids.length>1?'s':''}, nothing to report.`:'.'}</div></div>`;
   const t=repTotals(rows), rate=DB.settings.gstRate||5;
 
   // per payment mode
