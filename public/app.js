@@ -127,10 +127,14 @@ function viewSell(){
       <div class="sell-row"><button class="btn-sell" data-sell="${p.id}" ${disabled?'disabled':''}>${I.sell} Sell one</button></div>
     </div>`;
   }).join('');
+  const DAY=86400000, recent=[...DB.sales].filter(s=>s.ts>Date.now()-DAY).sort((a,b)=>b.ts-a.ts).slice(0,40);
+  const pname=id=>{const p=DB.products.find(x=>x.id===id);return p?p.name:'Coffee';};
+  const recentHtml=recent.length?recent.map(s=>`<div class="rs-row"><div class="rs-what"><b>${esc(pname(s.pid))}</b> · ${money(s.price)}</div><div class="rs-right"><span class="rs-time">${timeAgo(s.ts)}</span><button class="btn-ghost btn-mini" data-reverse="${s.id}">${I.undo} Reverse</button></div></div>`).join(''):'<div class="empty" style="padding:22px 12px">No sales in the last 24 hours.</div>';
   return `<div class="page-head">
       <div><h1>Sell coffee</h1><div class="ph-sub">Tap a coffee to record a sale. Stock updates instantly.</div></div>
       ${lowCount?`<button class="pill warn" data-goto="stock" data-tip="Tap to open Stock. Needs restock: ${esc(lowNames.join(', '))}" style="border:none;cursor:pointer;text-align:left;max-width:100%;white-space:normal">${I.issues} Restock: ${esc(lowNames.slice(0,3).join(', '))}${lowNames.length>3?` +${lowNames.length-3} more`:''}</button>`:`<span class="pill good">${I.check} All stock healthy</span>`}
-    </div><div class="grid sell-grid">${cards}</div>`;
+    </div><div class="grid sell-grid">${cards}</div>
+    <details class="rs"><summary><span>Recent sales · reverse within 24 h</span><span class="rs-count">${recent.length}</span></summary><div class="rs-body">${recentHtml}</div></details>`;
 }
 
 /* ---------- STOCK ---------- */
@@ -317,6 +321,12 @@ async function logIssue(id,amount,mode,reason){const {error}=await sb.rpc('log_i
 function wire(){
   document.querySelectorAll('[data-sell]').forEach(b=>b.onclick=()=>sell(b.dataset.sell));
   document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>go(b.dataset.goto));
+  document.querySelectorAll('[data-reverse]').forEach(b=>b.onclick=()=>{const id=b.dataset.reverse;
+    confirmModal('Reverse this sale?','The stock will be added back and this sale removed from your records.','Reverse',async()=>{
+      const {error}=await sb.rpc('undo_sale',{p_sale_id:id});
+      if(error){toast(error.message||'Could not reverse',I.issues);return;}
+      lastSale=null; await loadAll(); render(); toast('Sale reversed',I.undo);
+    },true);});
 
   const form=document.getElementById('issueForm');
   if(form){let mode='coffees';const hint=document.getElementById('ii-unithint'),prev=document.getElementById('ii-preview'),sel=document.getElementById('ii-ing'),amt=document.getElementById('ii-amt');
