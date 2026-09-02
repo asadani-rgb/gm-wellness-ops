@@ -44,10 +44,10 @@ const RC_FORMATS={a4:'A4 / slip',th80:'80 mm',th58:'58 mm'};
 function rcFmtGet(){try{const v=localStorage.getItem('gm_rcfmt');return RC_FORMATS[v]?v:'a4';}catch(e){return 'a4';}}
 function rcFmtSet(v){try{localStorage.setItem('gm_rcfmt',v);}catch(e){}}
 let rcFmt=rcFmtGet();
-let coState={orderType:'dine-in',paymentMode:'Cash',discMode:'pct',discPct:0,discAmt:0,reasonPreset:'',reasonText:'',customerName:''};
+let coState={orderType:'dine-in',paymentMode:'Cash',discMode:'pct',discPct:0,discAmt:0,discCustom:false,reasonPreset:'',reasonText:'',customerName:''};
 const DISCOUNT_PRESETS=[0,5,10,15];
 const REASON_PRESETS=['Regular customer','Loyalty / repeat visit','Staff meal','Service delay','Remake / damaged','Owner comp','Promotion','Other (type below)'];
-function resetCheckoutState(){coState={orderType:coState.orderType,paymentMode:coState.paymentMode,discMode:'pct',discPct:0,discAmt:0,reasonPreset:'',reasonText:'',customerName:''};}
+function resetCheckoutState(){coState={orderType:coState.orderType,paymentMode:coState.paymentMode,discMode:'pct',discPct:0,discAmt:0,discCustom:false,reasonPreset:'',reasonText:'',customerName:''};}
 function discCap(){const v=DB.settings&&DB.settings.maxStaffDiscPct;return v==null?15:Number(v);}
 function discInfo(){
   const gross=cartTotal();
@@ -244,7 +244,7 @@ function viewCheckout(){
   const taxable=+(total/(1+rate/100)).toFixed(2), tax=+(total-taxable).toFixed(2);
   const cgst=+(tax/2).toFixed(2), sgst=+(tax-cgst).toFixed(2);
   const otOn=DB.settings.orderTypeOn!==false;
-  const custom = coState.discMode==='amt' || !DISCOUNT_PRESETS.includes(Number(coState.discPct)||0);
+  const custom = coState.discCustom===true;
   const blocked = d.overCap || d.needsReason;
 
   const discBlock=`
@@ -252,13 +252,13 @@ function viewCheckout(){
       <div class="disc-head"><span class="lab" style="margin:0">Discount</span>
         ${d.amt>0?`<span class="pill warn" style="font-size:10.5px">−${money(d.amt)} · ${d.pct}%</span>`:`<span class="help" style="margin:0">None</span>`}</div>
       <div class="seg-inline seg-wrap" role="group" aria-label="Discount">
-        ${DISCOUNT_PRESETS.map(v=>`<button type="button" data-dp="${v}" aria-pressed="${!custom&&Number(coState.discPct)===v}">${v===0?'None':v+'%'}</button>`).join('')}
+        ${DISCOUNT_PRESETS.map(v=>`<button type="button" data-dp="${v}" aria-pressed="${!custom&&(Number(coState.discPct)||0)===v}">${v===0?'None':v+'%'}</button>`).join('')}
         <button type="button" data-dp="custom" aria-pressed="${custom}">Custom</button>
       </div>
       ${custom?`<div class="form-grid" style="margin-top:10px">
-        <div><label class="lab" for="d-pct">Percent</label><div class="numcell"><input class="mini-input" id="d-pct" type="number" min="0" max="100" step="0.5" value="${coState.discMode==='pct'?(coState.discPct||''):''}" placeholder="0"><span class="unit">%</span></div></div>
-        <div><label class="lab" for="d-amt">or Amount</label><div class="numcell"><input class="mini-input" id="d-amt" type="number" min="0" step="1" value="${coState.discMode==='amt'?(coState.discAmt||''):''}" placeholder="0"><span class="unit">${curCode()}</span></div></div>
-      </div>`:''}
+        <div><label class="lab" for="d-pct">Percent off</label><div class="numcell"><input class="mini-input" id="d-pct" type="number" min="0" max="100" step="0.5" inputmode="decimal" value="${coState.discMode==='pct'?(coState.discPct||''):''}" placeholder="0"><span class="unit">%</span></div></div>
+        <div><label class="lab" for="d-amt">or flat amount</label><div class="numcell"><input class="mini-input" id="d-amt" type="number" min="0" step="1" inputmode="decimal" value="${coState.discMode==='amt'?(coState.discAmt||''):''}" placeholder="0"><span class="unit">${curCode()}</span></div></div>
+      </div><div class="help" style="margin-top:6px">Type in one box — the other clears itself.</div>`:''}
       ${d.amt>0?`
         <label class="lab" for="d-reason" style="margin-top:12px">Reason <span style="color:var(--crit)">*</span></label>
         <select class="m-input" id="d-reason"><option value="">Choose a reason…</option>${REASON_PRESETS.map(r=>`<option value="${esc(r)}" ${coState.reasonPreset===r?'selected':''}>${esc(r)}</option>`).join('')}</select>
@@ -910,13 +910,19 @@ function wire(){
   // discount controls
   document.querySelectorAll('[data-dp]').forEach(b=>b.onclick=()=>{
     const v=b.dataset.dp;
-    if(v==='custom'){coState.discMode='pct';if(DISCOUNT_PRESETS.includes(Number(coState.discPct)||0))coState.discPct='';}
-    else {coState.discMode='pct';coState.discPct=Number(v);coState.discAmt=0;if(Number(v)===0){coState.reasonPreset='';coState.reasonText='';}}
-    render();});
-  const dpct=document.getElementById('d-pct');
-  if(dpct) dpct.onchange=()=>{coState.discMode='pct';coState.discPct=parseFloat(dpct.value)||0;coState.discAmt=0;render();};
-  const damt=document.getElementById('d-amt');
-  if(damt) damt.onchange=()=>{coState.discMode='amt';coState.discAmt=parseFloat(damt.value)||0;render();};
+    if(v==='custom'){coState.discCustom=true;coState.discMode='pct';coState.discPct=0;coState.discAmt=0;}
+    else {coState.discCustom=false;coState.discMode='pct';coState.discPct=Number(v);coState.discAmt=0;
+      if(Number(v)===0){coState.reasonPreset='';coState.reasonText='';}}
+    render();
+    if(v==='custom'){const el=document.getElementById('d-pct');if(el)el.focus();}});
+  // re-render to update the live total, then put the caret back where it was
+  const keepCaret=(id,apply)=>{const el=document.getElementById(id);if(!el)return;
+    el.oninput=()=>{let pos=null;try{pos=el.selectionStart;}catch(e){}
+      apply(el.value); render();
+      const back=document.getElementById(id);
+      if(back){back.focus();if(pos!=null){try{back.setSelectionRange(pos,pos);}catch(e){}}}};};
+  keepCaret('d-pct',v=>{coState.discCustom=true;coState.discMode='pct';coState.discPct=parseFloat(v)||0;coState.discAmt=0;});
+  keepCaret('d-amt',v=>{coState.discCustom=true;coState.discMode='amt';coState.discAmt=parseFloat(v)||0;coState.discPct=0;});
   const dre=document.getElementById('d-reason');
   if(dre) dre.onchange=()=>{coState.reasonPreset=dre.value;render();};
   const drt=document.getElementById('d-reasontext');
