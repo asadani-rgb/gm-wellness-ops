@@ -154,7 +154,7 @@
   .prod .price{font-weight:700;font-size:15px;white-space:nowrap}
   .prod .cups{font-size:12.5px;color:var(--ink-soft);margin-top:9px}
   .prod .cups b{color:var(--ink);font-weight:700}
-  .bar{height:7px;border-radius:999px;background:var(--surface-3);overflow:hidden;margin-top:8px}
+  .bar{height:9px;border-radius:999px;background:var(--surface-3);overflow:hidden;margin-top:8px}
   .bar > i{display:block;height:100%;border-radius:999px;transition:width .5s cubic-bezier(.2,.8,.2,1)}
   .bar.good > i{background:var(--good)} .bar.warn > i{background:var(--warn)} .bar.crit > i{background:var(--crit)}
   .prod .limit{font-size:11.5px;color:var(--ink-faint);margin-top:7px;min-height:1.2em}
@@ -172,21 +172,20 @@
   .prod.justsold .soldflash{animation:soldpop .9s ease both}
   @keyframes soldpop{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}
 
-  /* STOCK ROWS */
-  .stock-row{display:grid;grid-template-columns:1.4fr 1fr auto;gap:14px;align-items:center;padding:14px 4px;border-bottom:1px solid var(--line)}
+  /* STOCK ROWS (stacked: header line, meta, full-width bar) */
+  .stock-row{padding:16px 2px;border-bottom:1px solid var(--line)}
   .stock-row:last-child{border-bottom:none}
-  .ing-name{font-weight:600;font-size:15px;display:flex;align-items:center;gap:9px}
-  .ing-cat{font-size:11.5px;color:var(--ink-faint);font-weight:500}
-  .ing-dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .sr-head{display:flex;justify-content:space-between;align-items:baseline;gap:14px}
+  .ing-name{font-weight:600;font-size:16px;display:flex;align-items:center;gap:9px;min-width:0}
+  .ing-dot{width:10px;height:10px;border-radius:50%;flex:none}
   .ing-dot.good{background:var(--good)} .ing-dot.warn{background:var(--warn)} .ing-dot.crit{background:var(--crit)}
-  .ing-meta{font-size:12.5px;color:var(--ink-soft)}
+  .stk-right{text-align:right;white-space:nowrap;font-size:13px;color:var(--ink-soft)}
+  .stk-right b{font-size:17px;color:var(--ink);font-weight:700}
+  .stk-right .st.good{color:var(--good)} .stk-right .st.warn{color:var(--warn)} .stk-right .st.crit{color:var(--crit)}
+  .stk-right .st{font-weight:600}
+  .ing-meta{font-size:13px;color:var(--ink-soft);margin:7px 0 9px}
   .ing-meta b{color:var(--ink)}
-  .stk-right{text-align:right;font-size:12.5px;color:var(--ink-soft);white-space:nowrap}
-  .stk-right b{display:block;font-size:16px;color:var(--ink);font-weight:700}
-  @media(max-width:640px){
-    .stock-row{grid-template-columns:1fr auto}
-    .stock-row .barcell{grid-column:1 / -1;order:3}
-  }
+  .stock-row .bar{height:13px;margin-top:0}
 
   /* KPI */
   .kpi{padding:18px}
@@ -302,8 +301,34 @@
       border-top:1px solid var(--line);padding:6px 6px calc(6px + env(safe-area-inset-bottom));justify-content:space-around;box-shadow:0 -2px 12px rgba(36,48,39,.08)}
     .botnav button{border:none;background:none;color:var(--ink-faint);display:flex;flex-direction:column;align-items:center;gap:3px;
       font-size:10.5px;font-weight:600;padding:6px 4px;border-radius:10px;flex:1;min-width:0}
-    .botnav button svg{width:22px;height:22px}
+    .botnav button svg{width:24px;height:24px}
+    .botnav button{font-size:11px}
     .botnav button[aria-current="page"]{color:var(--accent)}
+    /* touch-friendly sizing on tablet / phone */
+    .sell-grid{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+    .prod{padding:18px}
+    .prod h3{font-size:19px}
+    .prod .price{font-size:16px}
+    .prod .cups{font-size:14px}
+    .prod .limit{font-size:12.5px}
+    .btn-sell{padding:15px;font-size:16px;border-radius:12px}
+    .btn-sell svg{width:18px;height:18px}
+    .page-head h1{font-size:26px}
+    .bar{height:11px}
+    .stock-row .bar{height:15px}
+    .ing-name{font-size:17px}
+    .stk-right b{font-size:19px}
+    .kpi .k-val{font-size:34px}
+    .seg button{padding:9px 16px;font-size:14px}
+    .mini-input{font-size:16px;width:84px;padding:9px 8px}
+    select,textarea,.form-grid input,.m-input{font-size:16px}
+    .btn-ghost{padding:9px 13px;font-size:14px}
   }
-  @media(max-width:400px){.sell-grid{grid-template-columns:1fr 1fr}.prod{padding:12px}.prod h3{font-size:15px}}
+  @media(max-width:560px){
+    .sell-grid{grid-template-columns:1fr}
+    .two-col{grid-template-columns:1fr}
+    .content{padding:16px 14px 104px}
+    .page-head h1{font-size:24px}
+    .btn-sell{padding:16px;font-size:17px}
+  }
   @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}

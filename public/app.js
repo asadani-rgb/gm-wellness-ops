@@ -139,11 +139,12 @@ function viewStock(){
   const rows=[...DB.ingredients].sort((a,b)=>order[statusOf(ratio(a))]-order[statusOf(ratio(b))]).map(x=>{
     const r=ratio(x),s=statusOf(r),cl=coffeesLeft(x),pk=x.stock/x.packet;
     return `<div class="stock-row">
-      <div><div class="ing-name"><span class="ing-dot ${s}"></span>${esc(x.name)}</div>
-        <div class="ing-cat">${esc(x.cat)} · 1 packet = ${fmtNum(x.packet)}${x.unit} ≈ ${x.perPacket} coffees</div></div>
-      <div class="barcell"><div class="ing-meta"><b class="num">${cl}</b> coffees' worth left · ${pk.toFixed(1)} packets</div>
-        <div class="bar ${s}"><i style="width:${Math.max(3,Math.round(r*100))}%"></i></div></div>
-      <div class="stk-right"><b class="num">${fmtNum(Math.round(x.stock))}<span style="font-size:11px;font-weight:600;color:var(--ink-faint)">${x.unit}</span></b>${statusLabel(s)}</div>
+      <div class="sr-head">
+        <div class="ing-name"><span class="ing-dot ${s}"></span>${esc(x.name)}</div>
+        <div class="stk-right"><b class="num">${fmtNum(Math.round(x.stock))}<span style="font-size:12px;font-weight:600;color:var(--ink-faint)">${x.unit}</span></b> · <span class="st ${s}">${statusLabel(s)}</span></div>
+      </div>
+      <div class="ing-meta"><b class="num">${cl}</b> coffees' worth left · ${pk.toFixed(1)} packets · ${esc(x.cat)}, 1 packet = ${fmtNum(x.packet)}${x.unit} ≈ ${x.perPacket} cups</div>
+      <div class="bar ${s}"><i style="width:${Math.max(3,Math.round(r*100))}%"></i></div>
     </div>`;
   }).join('');
   return `<div class="page-head"><div><h1>Stock levels</h1><div class="ph-sub">Live inventory across beans, milk and consumables.</div></div></div>
