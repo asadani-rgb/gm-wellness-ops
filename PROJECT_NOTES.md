@@ -30,6 +30,9 @@ supabase/
                recipe snapshot on order_items — run once, after phase2
   phase4.sql   manager override PIN for discounts above the staff limit (shop_secrets, bcrypt
                hash, set_override_pin/has_override_pin, orders.over_limit) — run once, after phase3
+  phase5.sql   MULTI-BRANCH: branches table, branch_id on every data table, per-branch GST identity
+               and invoice series, branch-scoped RLS, create_branch (copy-from) + wipe_branch,
+               admin_audit — run once, after phase4. BREAKING: deploy the frontend at the same time.
   seed.sql     sample coffees + supplies (optional)
   functions/admin-users/index.ts   Edge Function: admin add-user / reset-password / remove
 README.md      full first-time setup + deploy guide
@@ -42,6 +45,24 @@ README.md      full first-time setup + deploy guide
   sequential invoice number `GMW/<FY>/0001` (resets each Indian FY Apr–Mar), place of supply = shop state.
   GST rate default 5% (standalone cafe). India disclaimers printed on the bill.
 - Two roles: **admin** (full) and **staff** (Sell, Stock, Issues, Orders).
+
+## Branches (phase 5)
+Every branch is **fully independent**: its own drinks, prices, recipes, supplies, extras, stock,
+orders and **its own GST registration** (GSTIN, address, state, invoice prefix, rate). A new branch
+is made by **copying** an existing one — recipes and extras are remapped onto the new branch's own
+supplies, and stock starts at zero — after which the two drift apart freely.
+
+- **Staff belong to exactly one branch** and can only ever see that branch. Owners (admins) see all
+  and get a branch switcher in the sidebar. A staff account with **no branch cannot sell at all** —
+  the app shows "No branch assigned" and the RPC refuses.
+- **Invoice series are per branch** (`GMW/2026-27/0001` vs `GMW-IND/2026-27/0001`) — required, since
+  each branch bills under its own GSTIN. `invoice_counters` is keyed `(branch_id, fy)`.
+- **Reports** have a branch selector plus an **All branches** roll-up. The roll-up is for management
+  only and says so: GST is filed per branch, per GSTIN, never from the combined total.
+- Bills print the **active branch's** GST identity via `billInfo()`, not shop_settings.
+- `wipe_branch` clears a single branch: tick boxes for stock/sales/menu/supplies, and it demands the
+  branch name typed exactly **plus** the manager override PIN. Every run lands in `admin_audit`.
+  Supplies cannot be cleared without drinks (recipes reference supplies with ON DELETE RESTRICT).
 
 ## Features (built)
 - **Sell:** cart-only — Add to order → customize (qty + per-drink extras) → **Review** (dine-in/takeaway,
@@ -108,6 +129,13 @@ syrups 10 ml (5–30) · pcs 1 (1–3). Warnings are soft (never block).
   only) and `record_order` touch it. There is no rate limit on PIN attempts; a signed-in staff
   member could brute-force a 4-digit PIN through the API, so prefer 6+ digits and rotate it if
   someone leaves.
+
+## Verifying migrations before they touch production
+phase5 was dry-run by standing up a throwaway Postgres in the sandbox, stubbing `auth.uid()` and the
+`extensions` schema, and replaying schema → phase2 → phase3 → phase4 → phase5 over realistic data.
+That caught a live bug: `record_order` validated that *drinks* belonged to the billing branch but not
+*extras*, so an order at one branch could name another branch's extra and draw down that branch's
+stock. Do this for any future migration — it costs minutes and the app has no staging environment.
 
 ## Known trap: never re-render a view while someone is typing in it
 `render()` rebuilds `#view` wholesale. Doing that on every `oninput` destroyed the number input

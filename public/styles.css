@@ -408,6 +408,16 @@
     background:color-mix(in srgb, var(--crit) 12%, transparent);
     border:1px solid color-mix(in srgb, var(--crit) 45%, transparent);color:var(--crit)}
   .alert-danger b{color:var(--crit)}
+  /* --- branches --- */
+  .branch-bar{padding:10px 12px;margin:0 10px 8px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2,transparent)}
+  .branch-bar .bl{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);margin-bottom:4px;font-weight:600}
+  .branch-select{width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13.5px}
+  .branch-fixed b{font-size:14px}
+  .branch-none{display:flex;align-items:center;gap:8px;color:var(--crit);font-size:12.5px;font-weight:600}
+  .branch-none svg{width:18px;height:18px;flex:none}
+  .wipe-opt{display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;cursor:pointer}
+  .wipe-opt input{margin-top:3px;flex:none}
+  .wipe-opt em{display:block;font-style:normal;font-size:11.5px;color:var(--ink-soft);margin-top:2px;line-height:1.5}
   /* --- discounts, cancelled invoices --- */
   .disc-box{margin-top:18px;padding:14px;border:1px dashed var(--line);border-radius:12px;background:var(--surface-2,transparent)}
   .disc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap}

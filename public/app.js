@@ -36,8 +36,9 @@ function mapProduct(r){return {id:r.id,name:r.name,price:Number(r.price),recipe:
 
 /* ============================ STATE ============================ */
 const DEF_SETTINGS={shopName:'GM Wellness',currency:'INR',legalName:'',gstin:'',address:'',state:'',phone:'',fssai:'',invoicePrefix:'GMW',gstRate:5,orderTypeOn:true,maxStaffDiscPct:15};
-let DB={ingredients:[],products:[],extras:[],orders:[],orderItems:[],issues:[],users:[],settings:{...DEF_SETTINGS}};
+let DB={ingredients:[],products:[],extras:[],orders:[],orderItems:[],issues:[],users:[],settings:{...DEF_SETTINGS},branches:[],branch:null};
 let me=null, view='sell', lastSale=null, toastTimer=null, manageTab='supplies';
+let activeBranch=null;   // uuid of the branch currently being worked in
 let cart=[]; // [{uid, pid, name, price, qty, extras:[{id,name,price}]}]
 // Bill format is a per-till/printer choice, remembered on this device (not shop-wide).
 const RC_FORMATS={a4:'A4 / slip',th80:'80 mm',th58:'58 mm'};
@@ -71,22 +72,54 @@ function discInfo(){
 
 function mapSettings(d){ return d? {shopName:d.shop_name,currency:d.currency,legalName:d.legal_name||'',gstin:d.gstin||'',address:d.address||'',state:d.state||'',phone:d.phone||'',fssai:d.fssai||'',invoicePrefix:d.invoice_prefix||'GMW',gstRate:d.gst_rate!=null?Number(d.gst_rate):5,orderTypeOn:d.order_type_on!==false,maxStaffDiscPct:d.max_staff_discount_pct!=null?Number(d.max_staff_discount_pct):15} : {...DEF_SETTINGS}; }
 
+const branchById=id=>DB.branches.find(b=>b.id===id)||null;
+const isAdmin=()=>me&&me.role==='admin';
+// Staff are pinned to their branch; owners may switch.
+function branchesIcanSee(){ return isAdmin()?DB.branches:DB.branches.filter(b=>b.id===(me&&me.branchId)); }
+function mapBranch(b){return {id:b.id,name:b.name,code:b.code||'',legalName:b.legal_name||'',gstin:b.gstin||'',
+  address:b.address||'',state:b.state||'',phone:b.phone||'',fssai:b.fssai||'',
+  invoicePrefix:b.invoice_prefix||'GMW',gstRate:b.gst_rate!=null?Number(b.gst_rate):5,active:b.active!==false};}
+// Bills print the BRANCH's GST identity, falling back to shop settings pre-migration.
+function billInfo(){
+  const b=DB.branch, s=DB.settings;
+  if(!b) return {shopName:s.shopName,legalName:s.legalName,gstin:s.gstin,address:s.address,state:s.state,
+                 phone:s.phone,fssai:s.fssai,invoicePrefix:s.invoicePrefix,gstRate:s.gstRate,branchName:''};
+  return {shopName:s.shopName,legalName:b.legalName||s.legalName,gstin:b.gstin,address:b.address,state:b.state,
+          phone:b.phone,fssai:b.fssai,invoicePrefix:b.invoicePrefix,gstRate:b.gstRate,branchName:b.name};
+}
+async function loadBranches(){
+  const {data,error}=await sb.from('branches').select('*').order('name');
+  if(error){DB.branches=[];return;}
+  DB.branches=(data||[]).map(mapBranch);
+  const mine=branchesIcanSee();
+  if(!activeBranch||!mine.some(b=>b.id===activeBranch)){
+    activeBranch = (me&&me.branchId&&mine.some(b=>b.id===me.branchId)) ? me.branchId : (mine[0]?mine[0].id:null);
+  }
+  DB.branch=branchById(activeBranch);
+}
 async function loadAll(){
+  await loadBranches();
+  if(!activeBranch){ DB.ingredients=[];DB.products=[];DB.extras=[];DB.orders=[];DB.orderItems=[];DB.issues=[];
+    const st=await sb.from('shop_settings').select('*').eq('id',1).maybeSingle(); DB.settings=mapSettings(st.data);
+    const us=await sb.from('profiles').select('*').order('created_at');
+    if(us.data) DB.users=us.data.map(u=>({id:u.id,name:u.name,email:u.email,role:u.role,branchId:u.branch_id||null}));
+    return; }
+  const B=activeBranch;
   const since=new Date(Date.now()-14*86400000).toISOString();
   const [ings,prods,setts,users,issues,extras,eprods,orders]=await Promise.all([
-    sb.from('ingredients').select('*').order('name'),
-    sb.from('products').select('*, recipe_items(ingredient_id, qty)').order('name'),
+    sb.from('ingredients').select('*').eq('branch_id',B).order('name'),
+    sb.from('products').select('*, recipe_items(ingredient_id, qty)').eq('branch_id',B).order('name'),
     sb.from('shop_settings').select('*').eq('id',1).maybeSingle(),
     sb.from('profiles').select('*').order('created_at'),
-    sb.from('issues').select('id, ingredient_id, amount, mode, reason, created_at, profiles(name)').order('created_at',{ascending:false}).limit(50),
-    sb.from('extras').select('*').order('name'),
-    sb.from('extra_products').select('*'),
-    sb.from('orders').select('*, order_items(*)').gte('created_at',since).order('created_at',{ascending:false})
+    sb.from('issues').select('id, ingredient_id, amount, mode, reason, created_at, profiles(name)').eq('branch_id',B).order('created_at',{ascending:false}).limit(50),
+    sb.from('extras').select('*').eq('branch_id',B).order('name'),
+    sb.from('extra_products').select('*').eq('branch_id',B),
+    sb.from('orders').select('*, order_items(*)').eq('branch_id',B).gte('created_at',since).order('created_at',{ascending:false})
   ]);
   if(ings.data) DB.ingredients=ings.data.map(mapIngredient);
   if(prods.data) DB.products=prods.data.map(mapProduct);
   DB.settings=mapSettings(setts.data);
-  if(users.data) DB.users=users.data.map(u=>({id:u.id,name:u.name,email:u.email,role:u.role}));
+  if(users.data) DB.users=users.data.map(u=>({id:u.id,name:u.name,email:u.email,role:u.role,branchId:u.branch_id||null}));
   if(issues.data) DB.issues=issues.data.map(i=>({id:i.id,ing:i.ingredient_id,amount:Number(i.amount),mode:i.mode,reason:i.reason,by:(i.profiles&&i.profiles.name)||'—',ts:new Date(i.created_at).getTime()}));
   if(extras.data){
     const map={}; (eprods.data||[]).forEach(m=>{(map[m.extra_id]=map[m.extra_id]||[]).push(m.product_id);});
@@ -163,17 +196,45 @@ const NAV=[
   {id:'manage',label:'Admin',icon:I.manage,roles:['admin']}
 ];
 const navFor=()=>NAV.filter(n=>n.roles.includes(me.role));
+function renderBranchBar(){
+  const el=document.getElementById('branchBar'); if(!el) return;
+  const mine=branchesIcanSee();
+  if(!me){el.innerHTML='';return;}
+  if(!mine.length){
+    el.innerHTML=`<div class="branch-none">${I.issues}<span>No branch assigned</span></div>`; return; }
+  if(mine.length===1&&!isAdmin()){
+    el.innerHTML=`<div class="branch-fixed"><span class="bl">Branch</span><b>${esc(mine[0].name)}</b></div>`; return; }
+  el.innerHTML=`<label class="bl" for="branchPick">Branch</label>
+    <select id="branchPick" class="branch-select">${mine.map(b=>`<option value="${b.id}" ${b.id===activeBranch?'selected':''}>${esc(b.name)}${b.active===false?' (inactive)':''}</option>`).join('')}</select>`;
+  const sel=document.getElementById('branchPick');
+  sel.onchange=async()=>{
+    if(cart.length&&!confirm('Switching branch will clear the current order. Continue?')){sel.value=activeBranch;return;}
+    activeBranch=sel.value; cart=[]; resetCheckoutState(); rep.rows=null;
+    DB.branch=branchById(activeBranch);
+    await loadAll(); renderBranchBar(); render();
+    toast('Now working in '+(DB.branch?DB.branch.name:'—'),I.check);
+  };
+}
 function renderNav(){
   const items=navFor();
   document.getElementById('nav').innerHTML=items.map(n=>`<button class="nav-item" data-view="${n.id}" ${n.id===view?'aria-current="page"':''}>${n.icon}<span>${n.label}</span></button>`).join('');
   document.getElementById('botnav').innerHTML=items.map(n=>`<button data-view="${n.id}" ${n.id===view?'aria-current="page"':''}>${n.icon}<span>${n.label}</span></button>`).join('');
   document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>go(b.dataset.view));
+  renderBranchBar();
 }
 async function go(v){view=v;renderNav();render();window.scrollTo({top:0,behavior:'instant'});try{await loadAll();render();}catch(e){}}
 
 /* ============================ RENDER ============================ */
 function render(){
   const el=document.getElementById('view');
+  // A staff member with no branch must not be able to sell into nowhere.
+  if(me&&!activeBranch){
+    el.innerHTML=`<div class="page-head"><div><h1>No branch assigned</h1></div></div>
+      <div class="card card-pad"><div class="empty">
+        Your account isn't attached to a branch yet, so there's nothing to sell or count.<br>
+        Ask an owner to assign you in <b>Admin → Team</b>.
+      </div></div>`;
+    return; }
   const map={sell:viewSell,checkout:viewCheckout,orders:viewOrders,stock:viewStock,issues:viewIssues,analytics:viewAnalytics,reports:viewReports,manage:viewManage};
   el.innerHTML=(map[view]||viewSell)();
   wire();
@@ -238,7 +299,7 @@ function openAddModal(pid){
 
 /* ---------- CHECKOUT ---------- */
 function coTotalsHTML(){
-  const d=discInfo(), rate=DB.settings.gstRate||5;
+  const d=discInfo(), rate=billInfo().gstRate||5;
   const total=Math.round(d.gross-d.amt);
   const taxable=+(total/(1+rate/100)).toFixed(2), tax=+(total-taxable).toFixed(2);
   const cgst=+(tax/2).toFixed(2), sgst=+(tax-cgst).toFixed(2);
@@ -286,7 +347,7 @@ function viewCheckout(){
       <div class="co-amt num">${money(lineGross(l))}</div>
       <button class="icon-btn" data-crm="${l.uid}" aria-label="Remove" style="width:32px;height:32px">${I.trash}</button></div>`).join('');
 
-  const d=discInfo(), rate=DB.settings.gstRate||5;
+  const d=discInfo(), rate=billInfo().gstRate||5;
   const otOn=DB.settings.orderTypeOn!==false;
   const custom = coState.discCustom===true;
 
@@ -340,7 +401,8 @@ async function submitOrder(){
   const d=discInfo();
   if(d.needsReason){toast('A reason is required for every discount',I.issues);return;}
   if(d.needsPin&&d.pin.length<4){toast('A manager override PIN is required for this discount',I.issues);return;}
-  const payload={payment_mode:coState.paymentMode,order_type:(DB.settings.orderTypeOn!==false)?coState.orderType:null,
+  if(!activeBranch){toast('No branch selected',I.issues);return;}
+  const payload={branch_id:activeBranch,payment_mode:coState.paymentMode,order_type:(DB.settings.orderTypeOn!==false)?coState.orderType:null,
     customer_name:(coState.customerName||'').trim()||null,
     items:cart.map(l=>({product_id:l.pid,qty:l.qty,extras:l.extras.map(e=>e.id)}))};
   if(d.amt>0){
@@ -378,7 +440,7 @@ function rcTotalsHTML(o,rate){
 }
 function receiptHTML(o,fmt){
   fmt=fmt||rcFmt;
-  const s=DB.settings, rate=s.gstRate||5, narrow=(fmt==='th58');
+  const s=billInfo(), rate=s.gstRate||5, narrow=(fmt==='th58');
   const exOf=li=>(li.extras&&li.extras.length)?li.extras.map(e=>esc(e.name)+(Number(e.price)>0?` (${money(e.price)})`:'')).join(', '):'';
   // 58 mm is too narrow for a 4-column table, so items stack onto two short lines.
   const lines=o.items.map(li=>{
@@ -399,7 +461,8 @@ function receiptHTML(o,fmt){
       ${s.address?`<div class="rc-line">${esc(s.address)}</div>`:''}
       ${s.state?`<div class="rc-line">${esc(s.state)}</div>`:''}
       ${s.phone?`<div class="rc-line">Ph: ${esc(s.phone)}</div>`:''}
-      ${s.gstin?`<div class="rc-line"><b>GSTIN:</b> ${esc(s.gstin)}</div>`:'<div class="rc-line" style="color:#b00">Set GSTIN in Admin &rarr; Settings</div>'}
+      ${s.branchName?`<div class="rc-line">${esc(s.branchName)}</div>`:''}
+      ${s.gstin?`<div class="rc-line"><b>GSTIN:</b> ${esc(s.gstin)}</div>`:'<div class="rc-line" style="color:#b00">Set this branch&rsquo;s GSTIN in Admin &rarr; Branches</div>'}
       ${s.fssai?`<div class="rc-line">FSSAI: ${esc(s.fssai)}</div>`:''}
     </div>
     <div class="rc-title">TAX INVOICE</div>
@@ -443,7 +506,7 @@ function showReceipt(o){
 function downloadReceiptPDF(o,fmt){
   fmt=fmt||rcFmt;
   try{
-    const s=DB.settings, rate=s.gstRate||5; const jsPDF=window.jspdf&&window.jspdf.jsPDF;
+    const s=billInfo(), rate=s.gstRate||5; const jsPDF=window.jspdf&&window.jspdf.jsPDF;
     if(!jsPDF){window.print();return;}
     const M=n=>curCode()==='INR'?('Rs '+Math.round(n).toLocaleString('en-IN')):money(n);
     // Page width in points: 58 mm = 164 pt, 80 mm = 227 pt, slip = 300 pt.
@@ -591,7 +654,7 @@ function viewAnalytics(){
   const order={crit:0,warn:1,good:2};
   const health=[...DB.ingredients].sort((a,b)=>order[statusOf(ratio(a))]-order[statusOf(ratio(b))]).slice(0,6).map(x=>{const r=ratio(x),s=statusOf(r);
     return `<div class="hbar"><span class="hl">${esc(x.name)}</span><span class="htrack"><i style="width:${Math.max(3,Math.round(r*100))}%;background:var(--${s})"></i></span><span class="hv num" style="color:var(--${s})">${coffeesLeft(x)}</span></div>`;}).join('');
-  return `<div class="page-head"><div><h1>Analytics</h1><div class="ph-sub">Sales and stock over the last 14 days.</div></div><span class="pill neutral">Last 14 days</span></div>
+  return `<div class="page-head"><div><h1>Analytics</h1><div class="ph-sub">Sales and stock over the last 14 days${DB.branch?' · '+esc(DB.branch.name):''}.</div></div><span class="pill neutral">Last 14 days</span></div>
     <div class="grid kpi-grid" style="margin-bottom:16px">
       <div class="card kpi"><div class="k-lab">${I.analytics} Revenue</div><div class="k-val">${money(totalRev)}</div><div class="k-sub">${ordersCount} orders · ${totalCups} cups</div></div>
       <div class="card kpi"><div class="k-lab">${I.sell} Avg. order</div><div class="k-val">${money(aov)}</div><div class="k-sub">per order</div></div>
@@ -625,7 +688,7 @@ function cancelOrderModal(id){
 
 /* ---------- REPORTS (GST filing) ---------- */
 // Orders are only cached for 14 days in DB.orders, so filing reports query their own range.
-let rep={preset:'thismonth',from:'',to:'',rows:null,loading:false,err:''};
+let rep={preset:'thismonth',from:'',to:'',rows:null,loading:false,err:'',branch:''}; // branch '' = current, 'ALL' = every branch
 
 function fyBounds(d){ // Indian financial year: 1 Apr - 31 Mar
   const y=d.getMonth()>=3?d.getFullYear():d.getFullYear()-1;
@@ -652,7 +715,10 @@ async function loadReport(){
   rep.loading=true; rep.err=''; render();
   const from=new Date(a.getFullYear(),a.getMonth(),a.getDate()).toISOString();
   const to=new Date(b.getFullYear(),b.getMonth(),b.getDate()+1).toISOString(); // exclusive
-  const {data,error}=await sb.from('orders').select('*').gte('created_at',from).lt('created_at',to).order('created_at');
+  let q=sb.from('orders').select('*').gte('created_at',from).lt('created_at',to).order('created_at');
+  const scope = rep.branch || activeBranch;
+  if(scope!=='ALL') q=q.eq('branch_id',scope);
+  const {data,error}=await q;
   rep.loading=false;
   if(error){ rep.err=error.message||'Could not load orders.'; rep.rows=[]; render(); return; }
   rep.rows=(data||[]).map(o=>({
@@ -665,7 +731,8 @@ async function loadReport(){
     discountReason:o.discount_reason||'', discountBy:o.discount_by_name||'',
     status:o.status||'active', customerName:o.customer_name||'',
     cancelledBy:o.cancelled_by_name||'', cancelReason:o.cancel_reason||'',
-    cancelledAt:o.cancelled_at?new Date(o.cancelled_at).getTime():0
+    cancelledAt:o.cancelled_at?new Date(o.cancelled_at).getTime():0,
+    branchId:o.branch_id, branchName:(branchById(o.branch_id)||{}).name||'—'
   }));
   render();
 }
@@ -682,6 +749,12 @@ function viewReports(){
   const [a,b]=repRange();
   const head=`<div class="page-head"><div><h1>Reports</h1><div class="ph-sub">GST summary for filing, payment reconciliation and the discount audit trail.</div></div><span class="pill neutral">${a.toLocaleDateString('en-IN')} – ${b.toLocaleDateString('en-IN')}</span></div>
     <div class="card card-pad" style="margin-bottom:16px">
+      ${isAdmin()&&DB.branches.length>1?`<div style="margin-bottom:12px;max-width:320px">
+        <label class="lab" for="rp-branch">Branch</label>
+        <select class="m-input" id="rp-branch">
+          ${DB.branches.map(b=>`<option value="${b.id}" ${(rep.branch||activeBranch)===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}
+          <option value="ALL" ${rep.branch==='ALL'?'selected':''}>All branches (roll-up)</option>
+        </select></div>`:''}
       <div class="seg-inline seg-wrap" role="group" aria-label="Date range">${presets.map(([k,l])=>`<button type="button" data-rp="${k}" aria-pressed="${rep.preset===k}">${l}</button>`).join('')}</div>
       ${rep.preset==='custom'?`<div class="form-grid" style="margin-top:12px;max-width:420px">
         <div><label class="lab" for="rp-from">From</label><input class="m-input" id="rp-from" type="date" value="${esc(rep.from||ymd(a))}"></div>
@@ -699,9 +772,10 @@ function viewReports(){
 
   const all=rep.rows;
   const rows=all.filter(o=>o.status!=='cancelled');
+  const rate2=billInfo().gstRate||5;
   const voids=all.filter(o=>o.status==='cancelled');
   if(!rows.length) return head+`<div class="card card-pad"><div class="empty">No live invoices in this range${voids.length?` — ${voids.length} cancelled invoice${voids.length>1?'s':''}, nothing to report.`:'.'}</div></div>`;
-  const t=repTotals(rows), rate=DB.settings.gstRate||5;
+  const t=repTotals(rows), rate=rate2;
 
   // per payment mode
   const byPm={}; rows.forEach(o=>{const k=o.paymentMode;(byPm[k]=byPm[k]||{n:0,total:0,taxable:0,tax:0});byPm[k].n++;byPm[k].total+=o.total;byPm[k].taxable+=o.taxable;byPm[k].tax+=o.tax;});
@@ -733,6 +807,15 @@ function viewReports(){
       <div class="card kpi"><div class="k-lab">${I.shield} SGST @ ${rate/2}%</div><div class="k-val">${money2(t.sgst)}</div><div class="k-sub">output tax</div></div>
       <div class="card kpi"><div class="k-lab">${I.analytics} Invoice total</div><div class="k-val">${money2(t.total)}</div><div class="k-sub">collected incl. GST</div></div>
     </div>
+    ${rep.branch==='ALL'?`<div class="card card-pad" style="margin-bottom:16px">
+      <div class="section-title">By branch</div>
+      <div class="section-sub">Company-wide roll-up. <b>File GST per branch, not from this total</b> — each branch has its own GSTIN and its own return.</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Branch</th><th class="r">Invoices</th><th class="r">Taxable</th><th class="r">CGST</th><th class="r">SGST</th><th class="r">Total</th></tr></thead><tbody>
+      ${(()=>{const by={};rows.forEach(o=>{const k=o.branchName;(by[k]=by[k]||{n:0,taxable:0,cgst:0,sgst:0,total:0});
+        const v=by[k];v.n++;v.taxable+=o.taxable;v.cgst+=o.cgst;v.sgst+=o.sgst;v.total+=o.total;});
+        return Object.entries(by).sort((a,b2)=>b2[1].total-a[1].total).map(([k,v])=>
+          `<tr><td><b>${esc(k)}</b></td><td class="r num">${v.n}</td><td class="r num">${money2(v.taxable)}</td><td class="r num">${money2(v.cgst)}</td><td class="r num">${money2(v.sgst)}</td><td class="r num"><b>${money2(v.total)}</b></td></tr>`).join('');})()}
+      </tbody></table></div></div>`:''}
     <div class="grid two-col" style="margin-bottom:16px">
       <div class="card card-pad"><div class="section-title">By payment mode</div><div class="section-sub">Reconcile the till against UPI and card settlements.</div>
         <div class="tbl-wrap"><table><thead><tr><th>Mode</th><th class="r">Orders</th><th class="r">Taxable</th><th class="r">GST</th><th class="r">Total</th></tr></thead><tbody>${pmRows}</tbody></table></div></div>
@@ -746,7 +829,9 @@ function viewReports(){
           ${Math.abs(t.round)>=0.005?`<div><span>Round off</span><b class="num">${money2(t.round)}</b></div>`:''}
           <div class="co-grand"><span>Invoice value</span><b class="num">${money2(t.total)}</b></div>
         </div>
-        <p class="help" style="margin-top:10px">Intra-state supply · place of supply <b>${esc(DB.settings.state||'— set in Admin → Settings')}</b> · SAC 9963 · rate ${rate}%.</p></div>
+        <p class="help" style="margin-top:10px">${rep.branch==='ALL'
+          ?'<b style="color:var(--crit)">All-branches view — do not file from this.</b> Each branch files its own return under its own GSTIN.'
+          :`Intra-state supply · place of supply <b>${esc(billInfo().state||'— set in Admin → Branches')}</b> · GSTIN <b>${esc(billInfo().gstin||'not set')}</b> · SAC 9963 · rate ${rate}%.`}</p></div>
     </div>
     <div class="card card-pad" style="margin-bottom:16px"><div class="section-title">Day by day</div><div class="section-sub">Use this to tie each day's Z-total back to the filing.</div>
       <div class="tbl-wrap"><table><thead><tr><th>Date</th><th class="r">Orders</th><th class="r">Taxable</th><th class="r">CGST</th><th class="r">SGST</th>${t.disc>0?'<th class="r">Discount</th>':''}<th class="r">Total</th></tr></thead>
@@ -771,19 +856,21 @@ function reportCSV(){
   const t=repTotals(rows.filter(o=>o.status!=='cancelled'));
   const q=v=>`"${String(v==null?'':v).replace(/"/g,'""')}"`;
   const L=[];
-  L.push([q(s.legalName||s.shopName||'GM Wellness')]);
-  L.push([q('GSTIN'),q(s.gstin||'')]);
-  L.push([q('Place of supply'),q(s.state||'')]);
+  const bi=billInfo();
+  L.push([q((rep.branch==='ALL')?'ALL BRANCHES':(bi.legalName||bi.shopName||'GM Wellness'))]);
+  L.push([q('Branch'),q(rep.branch==='ALL'?'All branches (roll-up — file per branch)':(bi.branchName||'—'))]);
+  L.push([q('GSTIN'),q(rep.branch==='ALL'?'(varies by branch)':(bi.gstin||''))]);
+  L.push([q('Place of supply'),q(rep.branch==='ALL'?'(varies by branch)':(bi.state||''))]);
   L.push([q('Period'),q(a.toLocaleDateString('en-IN')+' to '+b.toLocaleDateString('en-IN'))]);
   L.push([q('GST rate'),q(rate+'%')]);
   L.push([]);
-  L.push(['Date','Invoice No','Status','Customer','Order type','Payment mode','Gross','Discount','Discount %','Discount reason','Discount by','Over limit','Taxable','CGST','SGST','Round off','Invoice total','Cancelled by','Cancel reason'].map(q));
-  rows.forEach(o=>L.push([q(new Date(o.ts).toLocaleString('en-IN')),q(o.invoiceNo),q(o.status||'active'),q(o.customerName),q(o.orderType),q(o.paymentMode),
+  L.push(['Date','Branch','Invoice No','Status','Customer','Order type','Payment mode','Gross','Discount','Discount %','Discount reason','Discount by','Over limit','Taxable','CGST','SGST','Round off','Invoice total','Cancelled by','Cancel reason'].map(q));
+  rows.forEach(o=>L.push([q(new Date(o.ts).toLocaleString('en-IN')),q(o.branchName),q(o.invoiceNo),q(o.status||'active'),q(o.customerName),q(o.orderType),q(o.paymentMode),
     o.gross.toFixed(2),o.discount.toFixed(2),o.discountPct||'',q(o.discountReason),q(o.discountBy),q(o.overLimit?'YES':''),
     o.taxable.toFixed(2),o.cgst.toFixed(2),o.sgst.toFixed(2),o.roundOff.toFixed(2),o.total.toFixed(2),
     q(o.cancelledBy),q(o.cancelReason)]));
   L.push([]);
-  L.push([q('TOTAL (live invoices only)'),q(''),q(''),q(''),q(''),q(''),'','','','','','',t.taxable.toFixed(2),t.cgst.toFixed(2),t.sgst.toFixed(2),t.round.toFixed(2),t.total.toFixed(2)]);
+  L.push([q('TOTAL (live invoices only)'),q(''),q(''),q(''),q(''),q(''),q(''),'','','','','','',t.taxable.toFixed(2),t.cgst.toFixed(2),t.sgst.toFixed(2),t.round.toFixed(2),t.total.toFixed(2)]);
   L.push([q('Discounts given'),t.disc.toFixed(2),q(t.discN+' of '+t.n+' orders')]);
   const csv='﻿'+L.map(r=>r.join(',')).join('\r\n');
   const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
@@ -796,10 +883,10 @@ function reportCSV(){
 
 /* ---------- ADMIN (Manage) ---------- */
 function viewManage(){
-  const tabs=[['supplies','Supplies'],['coffees','Coffees'],['extras','Extras'],['team','Team'],['settings','Settings']];
+  const tabs=[['supplies','Supplies'],['coffees','Coffees'],['extras','Extras'],['branches','Branches'],['team','Team'],['settings','Settings']];
   return `<div class="page-head"><div><h1>Admin</h1><div class="ph-sub">Set up your coffees, supplies, extras, team and shop settings.</div></div>
     <div class="seg" role="tablist">${tabs.map(([k,l])=>`<button role="tab" data-mtab="${k}" aria-selected="${manageTab===k}">${l}</button>`).join('')}</div></div>
-    ${manageTab==='supplies'?manageSupplies():manageTab==='coffees'?manageCoffees():manageTab==='extras'?manageExtras():manageTab==='team'?manageTeam():manageSettings()}`;
+    ${manageTab==='supplies'?manageSupplies():manageTab==='coffees'?manageCoffees():manageTab==='extras'?manageExtras():manageTab==='branches'?manageBranches():manageTab==='team'?manageTeam():manageSettings()}`;
 }
 function manageSupplies(){
   const rows=DB.ingredients.map(x=>{const s=statusOf(ratio(x));
@@ -892,13 +979,17 @@ function manageTeam(){
     return `<tr data-user="${u.id}">
       <td><b>${esc(u.name)}</b>${isMe?'<span class="youchip">You</span>':''}<div style="font-size:11.5px;color:var(--ink-faint)">${esc(u.email)}</div></td>
       <td><select class="mini" data-role="${u.id}"><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option><option value="staff" ${u.role==='staff'?'selected':''}>Staff</option></select></td>
+      <td><select class="mini" data-branchof="${u.id}">
+        <option value="" ${!u.branchId?'selected':''}>${u.role==='admin'?'All branches':'— not assigned —'}</option>
+        ${DB.branches.map(b=>`<option value="${b.id}" ${u.branchId===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}
+      </select>${(u.role!=='admin'&&!u.branchId)?'<div style="font-size:10.5px;color:var(--crit);margin-top:2px">cannot sell</div>':''}</td>
       <td class="r"><button class="btn-ghost btn-mini" data-resetpw="${u.id}">${I.key} Reset password</button></td>
       <td class="r"><button class="btn-ghost btn-mini" data-deluser="${u.id}" title="Remove" style="padding:6px 8px" ${isMe?'disabled style="opacity:.4;padding:6px 8px"':''}>${I.trash}</button></td></tr>`;}).join('');
   return `<div class="card"><div class="tbl-wrap"><table>
-      <thead><tr><th>Member</th><th>Role</th><th class="r">Password</th><th class="r">Remove</th></tr></thead>
+      <thead><tr><th>Member</th><th>Role</th><th>Branch</th><th class="r">Password</th><th class="r">Remove</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>
     <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn-ghost" id="addUser">${I.plus} Add team member</button></div>
-    <div class="callout">${I.shield}<div><b>Admins</b> open this Admin area (catalog, extras, team, settings). <b>Staff</b> can sell, view stock, log issues, and see orders. Accounts are stored securely in Supabase Auth (passwords are hashed); Add / Reset / Remove use the admin-users function.</div></div>`;
+    <div class="callout">${I.shield}<div><b>Staff must be assigned to a branch</b> before they can sell — an unassigned account sees nothing. <b>Admins</b> reach every branch and open this Admin area (catalog, extras, team, settings). <b>Staff</b> can sell, view stock, log issues, and see orders. Accounts are stored securely in Supabase Auth (passwords are hashed); Add / Reset / Remove use the admin-users function.</div></div>`;
 }
 
 function manageSettings(){
@@ -912,7 +1003,8 @@ function manageSettings(){
       </div>
       <div class="help" id="set-prev" style="margin-top:8px">Sample price: <b>${money(220)}</b>. Changing currency changes the symbol, not the amount.</div>
 
-      <div class="section-title" style="margin-top:20px">GST &amp; invoice</div><div class="section-sub">Printed on every bill. Required for a valid Tax Invoice.</div>
+      <div class="section-title" style="margin-top:20px">GST &amp; invoice</div>
+      <div class="section-sub">GST registration is <b>per branch</b> now — set each branch's GSTIN, address, state, invoice prefix and rate in <b>Admin → Branches</b>. The fields below are the legacy company-wide defaults, used only if a branch has none of its own.</div>
       <div class="form-grid">
         <div class="full"><label class="lab" for="set-legal">Legal / trade name</label><input class="m-input" id="set-legal" value="${esc(s.legalName||'')}" placeholder="e.g. GM Wellness Foods Pvt Ltd"></div>
         <div><label class="lab" for="set-gstin">GSTIN</label><input class="m-input" id="set-gstin" value="${esc(s.gstin||'')}" placeholder="15-character GSTIN"></div>
@@ -1021,6 +1113,8 @@ function wire(){
     render(); if(rep.preset!=='custom') loadReport();});
   const rpf=document.getElementById('rp-from'); if(rpf) rpf.onchange=()=>{rep.from=rpf.value;rep.rows=null;};
   const rpt=document.getElementById('rp-to');   if(rpt) rpt.onchange=()=>{rep.to=rpt.value;rep.rows=null;};
+  const rpb=document.getElementById('rp-branch');
+  if(rpb) rpb.onchange=()=>{rep.branch=rpb.value;rep.rows=null;render();loadReport();};
   const rpr=document.getElementById('rpRun');   if(rpr) rpr.onclick=loadReport;
   const rpc=document.getElementById('rpCsv');   if(rpc) rpc.onclick=reportCSV;
   const rpp=document.getElementById('rpPrint'); if(rpp) rpp.onclick=()=>{
@@ -1030,6 +1124,17 @@ function wire(){
     window.print();};
 
   document.querySelectorAll('[data-mtab]').forEach(b=>b.onclick=()=>{manageTab=b.dataset.mtab;render();});
+  // branches
+  const addBr=document.getElementById('addBranch'); if(addBr) addBr.onclick=()=>branchModal(null);
+  document.querySelectorAll('[data-editbranch]').forEach(b=>b.onclick=()=>branchModal(b.dataset.editbranch));
+  document.querySelectorAll('[data-wipebranch]').forEach(b=>b.onclick=()=>wipeBranchModal(b.dataset.wipebranch));
+  document.querySelectorAll('[data-branchof]').forEach(sel=>sel.onchange=async()=>{
+    const uid=sel.dataset.branchof, val=sel.value||null;
+    const {error}=await sb.from('profiles').update({branch_id:val}).eq('id',uid);
+    if(error){toast(error.message||'Could not change the branch',I.issues);return;}
+    if(uid===me.id){me.branchId=val;}
+    await loadAll(); renderBranchBar(); render();
+    toast(val?('Moved to '+(branchById(val)||{}).name):'Branch cleared',I.check);});
   document.querySelectorAll('tr[data-ing] .mini-input').forEach(inp=>inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();updateSupplyRow(inp.closest('tr').dataset.ing);}}));
   document.querySelectorAll('[data-updrow]').forEach(b=>b.onclick=()=>updateSupplyRow(b.dataset.updrow,b));
   document.querySelectorAll('[data-restock]').forEach(b=>b.onclick=async()=>{const x=ing(b.dataset.restock);b.disabled=true;const {data,error}=await sb.from('ingredients').update({stock:Number(x.stock)+Number(x.packet)}).eq('id',x.id).select('id,stock');b.disabled=false;if(error){toast('Restock failed: '+error.message,I.issues);return;}if(!data||!data.length){toast('Not saved — you may not have admin rights',I.issues);return;}await loadAll();render();toast(`+1 packet of ${x.name} (now ${fmtNum(Math.round(data[0].stock))}${x.unit})`,I.plus);});
@@ -1233,6 +1338,108 @@ function editRecipe(pid){
   draw();
 }
 
+/* ---------- ADMIN : BRANCHES ---------- */
+function manageBranches(){
+  const rows=DB.branches.map(b=>`<tr data-branch="${b.id}">
+      <td><b>${esc(b.name)}</b>${b.id===activeBranch?' <span class="pill good" style="font-size:10px">current</span>':''}${b.active===false?' <span class="pill crit" style="font-size:10px">inactive</span>':''}
+        <div style="font-size:11.5px;color:var(--ink-faint)">${esc(b.address||'No address set')}${b.state?' · '+esc(b.state):''}</div></td>
+      <td style="font-size:12.5px">${b.gstin?esc(b.gstin):'<span style="color:var(--crit)">No GSTIN</span>'}</td>
+      <td style="font-size:12.5px;white-space:nowrap">${esc(b.invoicePrefix)}/…/0001<div style="font-size:11px;color:var(--ink-faint)">GST ${b.gstRate}%</div></td>
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+        <button class="btn-ghost btn-mini" data-editbranch="${b.id}">Edit</button>
+        <button class="btn-ghost btn-mini" data-wipebranch="${b.id}" style="color:var(--crit)">${I.trash} Clear data</button></div></td></tr>`).join('');
+  return `<div class="card"><div class="tbl-wrap"><table>
+      <thead><tr><th>Branch</th><th>GSTIN</th><th>Invoice series</th><th class="r">Actions</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="4" class="empty">No branches yet.</td></tr>'}</tbody></table></div></div>
+    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">
+      <button class="btn-ghost" id="addBranch">${I.plus} Add branch</button>
+      <span class="help">Each branch keeps its own drinks, prices, stock, orders and GST registration. Bills print that branch's GSTIN and run their own invoice series.</span>
+    </div>`;
+}
+function branchModal(id){
+  const b=id?branchById(id):null;
+  const others=DB.branches.filter(x=>!b||x.id!==b.id);
+  const F=(k,l,v,ph)=>`<div><label class="lab" for="b-${k}">${l}</label><input class="m-input" id="b-${k}" value="${esc(v||'')}" placeholder="${esc(ph||'')}"></div>`;
+  openModal({title:b?('Edit '+b.name):'Add a branch',confirmLabel:b?'Save branch':'Create branch',
+    body:`<div class="form-grid">
+        ${F('name','Branch name',b?b.name:'','e.g. Indiranagar')}
+        ${F('code','Short code',b?b.code:'','e.g. IND')}
+        <div class="full"><label class="lab" for="b-legal">Legal / trade name</label><input class="m-input" id="b-legal" value="${esc(b?b.legalName:'')}" placeholder="As registered"></div>
+        ${F('gstin','GSTIN',b?b.gstin:'','15-character GSTIN')}
+        ${F('state','State (place of supply)',b?b.state:'','e.g. Karnataka')}
+        <div class="full">${F('addr','Address',b?b.address:'','Branch address').replace('<div>','').replace(/<\/div>$/,'')}</div>
+        ${F('phone','Phone',b?b.phone:'')}
+        ${F('fssai','FSSAI (optional)',b?b.fssai:'')}
+        ${F('prefix','Invoice prefix',b?b.invoicePrefix:'GMW','e.g. GMW-IND')}
+        <div><label class="lab" for="b-rate">GST rate (%)</label><input class="m-input" id="b-rate" type="number" min="0" step="0.5" value="${b?b.gstRate:5}"></div>
+        ${b?`<div><label class="lab" for="b-active">Status</label><select id="b-active"><option value="1" ${b.active!==false?'selected':''}>Active</option><option value="0" ${b.active===false?'selected':''}>Inactive</option></select></div>`:''}
+        ${!b&&others.length?`<div class="full"><label class="lab" for="b-copy">Start from</label>
+          <select id="b-copy"><option value="">Empty branch — set everything up by hand</option>
+          ${others.map(o=>`<option value="${o.id}">Copy drinks, recipes, supplies &amp; extras from ${esc(o.name)}</option>`).join('')}</select>
+          <div class="help">Copied branches start with <b>zero stock</b>; prices and recipes can be changed independently afterwards.</div></div>`:''}
+      </div>
+      ${b?'':'<div class="help" style="margin-top:10px">Give each branch its own invoice prefix so the two series never collide.</div>'}`,
+    onConfirm:root=>{
+      const g=k=>(root.querySelector('#b-'+k)?root.querySelector('#b-'+k).value:'').trim();
+      const name=g('name'); if(!name){toast('The branch needs a name',I.issues);return false;}
+      const rec={name,code:g('code')||null,legal_name:g('legal')||null,gstin:g('gstin')||null,state:g('state')||null,
+        address:g('addr')||null,phone:g('phone')||null,fssai:g('fssai')||null,
+        invoice_prefix:g('prefix')||'GMW',gst_rate:parseFloat(g('rate'))||5};
+      (async()=>{
+        if(b){
+          const el=root.querySelector('#b-active'); if(el) rec.active=el.value==='1';
+          const {error}=await sb.from('branches').update(rec).eq('id',b.id);
+          if(error){toast(error.message||'Could not save the branch',I.issues);return;}
+          await loadAll(); renderBranchBar(); render(); toast('Branch saved',I.check);
+        }else{
+          const copyEl=root.querySelector('#b-copy');
+          const {data,error}=await sb.rpc('create_branch',{p_name:name,p_code:rec.code,
+            p_copy_from:(copyEl&&copyEl.value)||null,p_invoice_prefix:rec.invoice_prefix});
+          if(error){toast(error.message||'Could not create the branch',I.issues);return;}
+          // the RPC only takes name/code/prefix, so save the GST details straight after
+          await sb.from('branches').update(rec).eq('id',data);
+          await loadAll(); renderBranchBar(); render(); toast(name+' created',I.check);
+        }
+      })();
+    }});
+}
+
+function wipeBranchModal(id){
+  const b=branchById(id); if(!b) return;
+  const opts=[
+    ['stock','Stock levels + issues log','Sets every supply to zero and clears the spillage/waste log. Keeps the supplies themselves.'],
+    ['sales','Sales history (orders + invoices)','Permanently deletes every order, tax invoice and discount record for this branch, and restarts the invoice series at 0001.'],
+    ['menu','Drinks + recipes','Removes this branch\'s drinks and their recipes.'],
+    ['supplies','Supplies + extras','Removes the supply definitions and add-ons. Requires "Drinks + recipes" as well, because recipes point at supplies.']];
+  openModal({title:'Clear data — '+b.name,confirmLabel:'Clear selected data',danger:true,
+    body:`<div class="alert-danger" style="margin-top:0">
+        <b>This cannot be undone.</b> It affects <b>${esc(b.name)}</b> only — other branches are untouched.
+        Deleted tax invoices cannot be recovered, and Indian GST rules expect invoice records to be kept for 6 years.
+        Export what you need from <b>Reports</b> first.
+      </div>
+      <div style="margin-top:14px">${opts.map(([k,l,d])=>`<label class="wipe-opt"><input type="checkbox" data-wo="${k}"><span><b>${l}</b><em>${d}</em></span></label>`).join('')}</div>
+      <label class="lab" for="w-name" style="margin-top:14px">Type <b>${esc(b.name)}</b> to confirm</label>
+      <input class="m-input" id="w-name" placeholder="${esc(b.name)}" autocomplete="off">
+      <label class="lab" for="w-pin" style="margin-top:12px">Manager override PIN</label>
+      <input class="m-input" id="w-pin" type="password" inputmode="numeric" placeholder="4–8 digits" autocomplete="off">`,
+    onConfirm:root=>{
+      const o={}; root.querySelectorAll('[data-wo]').forEach(c=>{if(c.checked)o[c.dataset.wo]=true;});
+      if(!Object.keys(o).length){toast('Tick at least one thing to clear',I.issues);return false;}
+      if(o.supplies&&!o.menu){toast('Clearing supplies also clears recipes — tick "Drinks + recipes" too',I.issues);return false;}
+      const nm=root.querySelector('#w-name').value.trim();
+      if(nm!==b.name){toast('The branch name does not match',I.issues);return false;}
+      const pin=root.querySelector('#w-pin').value.trim();
+      if(!pin){toast('The override PIN is required',I.issues);return false;}
+      (async()=>{
+        const {data,error}=await sb.rpc('wipe_branch',{p_branch:b.id,p_opts:o,p_confirm_name:nm,p_pin:pin});
+        if(error){toast(error.message||'Could not clear the branch',I.issues);return;}
+        const d=data||{};
+        await loadAll(); render();
+        toast(`Cleared ${b.name}: ${d.orders||0} orders, ${d.products||0} drinks, ${d.supplies||0} supplies`,I.check);
+      })();
+    }});
+}
+
 /* ---------- generic modal + confirm ---------- */
 function openModal(opts){
   const root=document.getElementById('modalRoot');
@@ -1351,7 +1558,7 @@ async function signIn(){
 async function afterLogin(){
   const {data:{user}}=await sb.auth.getUser();if(!user)return;
   const {data:prof}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
-  me={id:user.id,email:user.email,name:(prof&&prof.name&&String(prof.name).trim())||user.email||'User',role:(prof&&prof.role)||'staff'};
+  me={id:user.id,email:user.email,name:(prof&&prof.name&&String(prof.name).trim())||user.email||'User',role:(prof&&prof.role)||'staff',branchId:(prof&&prof.branch_id)||null};
   document.getElementById('login').style.display='none';document.getElementById('app').classList.add('on');
   await loadAll();setUserChrome();setShopName();view='sell';renderNav();render();
 }
