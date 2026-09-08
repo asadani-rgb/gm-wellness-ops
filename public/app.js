@@ -621,9 +621,9 @@ function showReceipt(o){
       <div id="rcBody">${receiptHTML(o)}</div>
     </div>
     <div class="modal-foot">
-      ${o.status==='cancelled'?''
+      ${!canAmend(o)?''
         : inGrace(o) ? `<button class="btn-ghost" id="rcBack">${I.undo} Back to cart</button>`
-        : (isAdmin()||o.ts>Date.now()-86400000) ? `<button class="btn-ghost" id="rcAmend" style="color:var(--crit)">${I.undo} Amend bill</button>` : ''}
+        : `<button class="btn-ghost" id="rcAmend" style="color:var(--crit)">${I.undo} Amend bill</button>`}
       <button class="btn-ghost" id="rcClose">Close</button><button class="btn-ghost" id="rcPdf">${I.download} PDF</button><button class="btn btn-primary" id="rcPrint">${I.receipt} Print / Save PDF</button></div>
   </div></div>`;
   const close=()=>{root.innerHTML='';applyReceiptPage('a4');};
@@ -707,9 +707,15 @@ function cartFromOrder(o){
 // Just after submitting, correcting a bill should cost one click. The reason is
 // still recorded, just filled in for you. Older bills need a typed reason.
 const AMEND_GRACE_MS=5*60*1000;
+// Re-issuing an old bill rewrites revenue in a period that may already be
+// reconciled or filed, so amending is capped at 24h for EVERYONE, owners too.
+// Beyond that the correct instrument is a credit note, not a cancellation.
+const AMEND_MAX_MS=24*60*60*1000;
+const canAmend=o=>o&&o.status!=='cancelled'&&(Date.now()-o.ts)<AMEND_MAX_MS;
 const inGrace=o=>o&&o.status!=='cancelled'&&(Date.now()-o.ts)<AMEND_GRACE_MS;
 async function backToCart(id){
   const o=DB.orders.find(x=>x.id===id); if(!o) return;
+  if(!canAmend(o)){toast('That bill is too old to reopen',I.issues);return;}
   const {lines,missing}=cartFromOrder(o);
   if(!lines.length){toast('Nothing on that bill can be re-ordered',I.issues);return;}
   const mins=Math.max(1,Math.round((Date.now()-o.ts)/60000));
@@ -730,6 +736,7 @@ async function backToCart(id){
 function amendOrderModal(id){
   const o=DB.orders.find(x=>x.id===id); if(!o) return;
   if(o.status==='cancelled'){toast('That invoice is already cancelled',I.issues);return;}
+  if(!canAmend(o)){toast('Bills can only be re-issued within 24 hours — this one needs a credit note',I.issues);return;}
   const {lines,missing}=cartFromOrder(o);
   if(!lines.length){toast('Nothing on that bill can be re-ordered — the drinks no longer exist',I.issues);return;}
   const repriced=o.items.some(li=>{const p=DB.products.find(x=>x.id===li.pid);return p&&Number(p.price)!==Number(li.unitPrice);});
@@ -771,7 +778,9 @@ function viewOrders(){
   const list=DB.orders.filter(o=>!q||(o.invoiceNo||'').toLowerCase().includes(q)||o.items.some(li=>li.name.toLowerCase().includes(q)));
   const rows=list.map(o=>{
     const dead=o.status==='cancelled';
-    const canRev=!dead&&(me.role==='admin'||o.ts>now-DAY);
+    const canRev=!dead&&(me.role==='admin'||o.ts>now-DAY);   // cancelling: staff 24h, owner anytime
+    const amendOk=canAmend(o);                               // re-issuing: 24h for everyone
+    const grace=inGrace(o);
     const items=o.items.map(li=>`${li.qty}× ${esc(li.name)}`).join(', ');
     const repBy=o.replacedBy?DB.orders.find(x=>x.id===o.replacedBy):null;
     const reps=o.replaces?DB.orders.find(x=>x.id===o.replaces):null;
@@ -783,7 +792,12 @@ function viewOrders(){
       <td style="font-size:12.5px;color:var(--ink-soft);white-space:nowrap">${timeAgo(o.ts)}</td>
       <td class="r"><span class="pill neutral" style="font-size:10.5px">${esc(o.paymentMode||'-')}</span></td>
       <td class="r num"><b>${money(o.total)}</b></td>
-      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button><button class="btn-ghost btn-mini" ${inGrace(o)?`data-backcart="${o.id}"`:`data-amend="${o.id}"`} ${canRev?'':'disabled style="opacity:.4"'}>${inGrace(o)?'Back to cart':'Amend'}</button><button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>${I.undo} ${dead?'Cancelled':'Cancel'}</button></div></td></tr>`;
+      <td class="r"><div class="ord-actions">
+        <button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button>
+        <button class="btn-ghost btn-mini" ${amendOk?(grace?`data-backcart="${o.id}"`:`data-amend="${o.id}"`):'disabled'}
+          ${amendOk?'':`data-tip="${dead?'This invoice is already cancelled.':'Bills can only be re-issued within 24 hours. Older corrections need a credit note.'}"`}>${grace?'Reopen':'Amend'}</button>
+        <button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled'}>${I.undo} Cancel</button>
+      </div></td></tr>`;
   }).join('');
   const live=DB.orders.filter(o=>o.status!=='cancelled');
   const rev14=live.reduce((a,o)=>a+o.total,0);

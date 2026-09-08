@@ -411,6 +411,15 @@
     background:color-mix(in srgb, var(--crit) 12%, transparent);
     border:1px solid color-mix(in srgb, var(--crit) 45%, transparent);color:var(--crit)}
   .alert-danger b{color:var(--crit)}
+  /* Orders actions: fixed columns so the buttons line up down the whole table
+     regardless of label length (Reopen vs Amend, enabled vs disabled). */
+  .ord-actions{display:inline-grid;grid-template-columns:82px 88px 96px;gap:6px}
+  .ord-actions .btn-mini{width:100%;justify-content:center;white-space:nowrap;padding-left:0;padding-right:0}
+  .ord-actions .btn-mini[disabled]{opacity:.38;cursor:not-allowed}
+  @media (max-width:640px){
+    .ord-actions{grid-template-columns:1fr 1fr;gap:5px}
+    .ord-actions .btn-mini:first-child{grid-column:1 / -1}
+  }
   /* --- keyboard, search, parking, editable cart lines --- */
   .kbd-hint{font-size:11px;color:var(--ink-faint);margin-right:auto}
   .kbd-hint b{display:inline-block;min-width:16px;padding:1px 4px;border:1px solid var(--line);border-bottom-width:2px;

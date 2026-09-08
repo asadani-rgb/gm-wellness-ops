@@ -111,8 +111,17 @@ supplies, and stock starts at zero — after which the two drift apart freely.
   - **Within 5 minutes** (`AMEND_GRACE_MS`): a plain **"Back to cart"** button — one click, no modal,
     no dropdown. The reason is still recorded, auto-filled as "Corrected at till (within N min of
     issuing)". This is the customer-still-at-the-counter case.
-  - **Older than that, or from the Orders list:** the full **"Amend bill"** flow with a required
-    reason, because by then the bill has probably been handed over and paid.
+  - **Older than that, up to 24h:** the full **"Amend bill"** flow with a required reason, because
+    by then the bill has probably been handed over and paid.
+  - **Past 24h (`AMEND_MAX_MS`): amending is BLOCKED for everyone, owners included.** Re-issuing an
+    old bill rewrites revenue in a period that may already be reconciled or filed; the correct
+    instrument then is a credit note. Both the buttons and `amendOrderModal`/`backToCart` enforce it.
+  - Orders-list action buttons use a fixed 3-column grid (`.ord-actions`) and constant labels, so
+    they line up down the table no matter which state each row is in.
+- **Cancelling is deliberately NOT capped** (staff 24h, owner anytime) even though amending is. That
+  asymmetry is a considered choice, not an oversight: it leaves an escape hatch for a mistake found
+  late, and every cancellation is logged and stays visible as CANCELLED with its reason. Revisit only
+  if cancellations start showing up against already-filed months.
   Either way the two are linked both ways
   (`orders.replaces` / `orders.replaced_by`) so Orders shows "→ replaced by …" and "↩ replaces …".
   The DB refuses re-issuing before cancelling, and refuses replacing the same invoice twice.
