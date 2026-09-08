@@ -105,9 +105,15 @@ supplies, and stock starts at zero — after which the two drift apart freely.
 ## Editing an order
 - **Before submit:** click any cart line on the Review screen to reopen it and change quantity or
   extras in place. It replaces that line rather than adding a second one.
-- **After submit — "Amend":** a tax invoice can't lawfully be edited once numbered, so Amend
-  **cancels** the original and drops the whole order back into the cart (extras, discount, payment
-  mode, customer name). Submitting issues a **new** number, and the two are linked both ways
+- **After submit — two paths, by age.** A tax invoice can't lawfully be edited once numbered, so
+  both paths **cancel** the original and drop the whole order back into the cart (extras, discount,
+  payment mode, customer name); submitting issues a **new** number.
+  - **Within 5 minutes** (`AMEND_GRACE_MS`): a plain **"Back to cart"** button — one click, no modal,
+    no dropdown. The reason is still recorded, auto-filled as "Corrected at till (within N min of
+    issuing)". This is the customer-still-at-the-counter case.
+  - **Older than that, or from the Orders list:** the full **"Amend bill"** flow with a required
+    reason, because by then the bill has probably been handed over and paid.
+  Either way the two are linked both ways
   (`orders.replaces` / `orders.replaced_by`) so Orders shows "→ replaced by …" and "↩ replaces …".
   The DB refuses re-issuing before cancelling, and refuses replacing the same invoice twice.
   Available from the receipt and the Orders list, under the same 24h-staff / anytime-admin rule as

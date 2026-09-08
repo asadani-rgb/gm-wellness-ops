@@ -321,7 +321,7 @@ function openAddModal(pid,editUid){
         ${exs.length?`<div class="lab" style="margin-top:16px">Extras</div>${exs.map(e=>`<label class="exrow"><span><input type="checkbox" data-ex="${e.id}" ${sel[e.id]?'checked':''}> ${esc(e.name)}</span><span class="expr ${e.price>0?'':'free'}">${e.price>0?('+ '+money(e.price)):'Free'}</span></label>`).join('')}`:'<div class="help" style="margin-top:14px">No extras configured for this drink.</div>'}
       </div>
       <div class="modal-foot"><span class="kbd-hint"><b>↵</b> ${line?'save':'add'} · <b>esc</b> close · type a number for qty</span>
-        <button class="btn-ghost" id="mcancel">Cancel</button><button class="btn btn-primary" id="madd">${I.cart} ${line?'Save':'Add'} · <span id="mlt">${money(lineTot())}</span></button></div>
+        <button class="btn-ghost" id="mcancel">Cancel</button><button class="btn btn-primary" id="madd">${I.cart} ${line?'Save':'Add'} <span id="mlt">${money(lineTot())}</span></button></div>
     </div></div>`;
     const close=()=>root.innerHTML='';
     document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
@@ -508,7 +508,7 @@ function viewCheckout(){
   const amO=amendingFrom?DB.orders.find(x=>x.id===amendingFrom):null;
   return `<div class="page-head"><div><h1>Review order</h1><div class="ph-sub">Confirm with the customer, then submit.</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">${cart.length?`<button class="btn-ghost" id="parkBtn2">${I.pause} Park</button>`:''}<button class="btn-ghost" data-goto="sell">${I.plus} Add more</button></div></div>
-    ${amO?`<div class="alert-danger" style="margin:0 0 14px">Re-issuing <b>${esc(amO.invoiceNo||'')}</b>, which is now cancelled. Submitting will create a new invoice number linked to it.</div>`:''}
+    ${amO?`<div class="alert-danger" style="margin:0 0 14px">Correcting <b>${esc(amO.invoiceNo||'')}</b> — that bill is now cancelled. Submitting issues a new invoice number linked to it.</div>`:''}
     <div class="grid two-col">
       <div class="card card-pad"><div class="section-title">Items · ${cartCount()}</div><div style="margin-top:8px">${rows}</div>${discBlock}</div>
       <div class="card card-pad">
@@ -621,7 +621,9 @@ function showReceipt(o){
       <div id="rcBody">${receiptHTML(o)}</div>
     </div>
     <div class="modal-foot">
-      ${(o.status!=='cancelled'&&(isAdmin()||o.ts>Date.now()-86400000))?`<button class="btn-ghost" id="rcAmend" style="color:var(--crit)">${I.undo} Amend</button>`:''}
+      ${o.status==='cancelled'?''
+        : inGrace(o) ? `<button class="btn-ghost" id="rcBack">${I.undo} Back to cart</button>`
+        : (isAdmin()||o.ts>Date.now()-86400000) ? `<button class="btn-ghost" id="rcAmend" style="color:var(--crit)">${I.undo} Amend bill</button>` : ''}
       <button class="btn-ghost" id="rcClose">Close</button><button class="btn-ghost" id="rcPdf">${I.download} PDF</button><button class="btn btn-primary" id="rcPrint">${I.receipt} Print / Save PDF</button></div>
   </div></div>`;
   const close=()=>{root.innerHTML='';applyReceiptPage('a4');};
@@ -630,6 +632,7 @@ function showReceipt(o){
   document.getElementById('rcPrint').onclick=()=>window.print();
   document.getElementById('rcPdf').onclick=()=>downloadReceiptPDF(o);
   const am=document.getElementById('rcAmend'); if(am) am.onclick=()=>{close();amendOrderModal(o.id);};
+  const bk=document.getElementById('rcBack');  if(bk) bk.onclick=()=>backToCart(o.id);
   root.querySelectorAll('[data-rcf]').forEach(b=>b.onclick=()=>{rcFmt=b.dataset.rcf;rcFmtSet(rcFmt);paint();});
   applyReceiptPage(rcFmt);
 }
@@ -701,6 +704,29 @@ function cartFromOrder(o){
   }).filter(Boolean);
   return {lines,missing};
 }
+// Just after submitting, correcting a bill should cost one click. The reason is
+// still recorded, just filled in for you. Older bills need a typed reason.
+const AMEND_GRACE_MS=5*60*1000;
+const inGrace=o=>o&&o.status!=='cancelled'&&(Date.now()-o.ts)<AMEND_GRACE_MS;
+async function backToCart(id){
+  const o=DB.orders.find(x=>x.id===id); if(!o) return;
+  const {lines,missing}=cartFromOrder(o);
+  if(!lines.length){toast('Nothing on that bill can be re-ordered',I.issues);return;}
+  const mins=Math.max(1,Math.round((Date.now()-o.ts)/60000));
+  const {error}=await sb.rpc('cancel_order',{p_order_id:o.id,
+    p_reason:`Corrected at till (within ${mins} min of issuing)`});
+  if(error){toast(error.message||'Could not reopen the bill',I.issues);return;}
+  cart=lines; amendingFrom=o.id;
+  coState={...coState,orderType:o.orderType||coState.orderType,paymentMode:o.paymentMode||coState.paymentMode,
+    customerName:o.customerName||'',discMode:'pct',discPct:0,discAmt:0,discCustom:false,reasonPreset:'',reasonText:'',pin:''};
+  if(o.discount>0){ coState.discCustom=true; coState.discMode='amt'; coState.discAmt=o.discount;
+    coState.reasonPreset='Other (type below)'; coState.reasonText=o.discountReason||'Carried over from '+(o.invoiceNo||''); }
+  document.getElementById('modalRoot').innerHTML='';
+  await loadAll();
+  view='checkout'; renderNav(); render();
+  toast(missing.length?`Back in the cart — ${[...new Set(missing)].join(', ')} no longer on the menu`
+                      :'Back in the cart — edit and submit to re-issue',I.undo);
+}
 function amendOrderModal(id){
   const o=DB.orders.find(x=>x.id===id); if(!o) return;
   if(o.status==='cancelled'){toast('That invoice is already cancelled',I.issues);return;}
@@ -757,7 +783,7 @@ function viewOrders(){
       <td style="font-size:12.5px;color:var(--ink-soft);white-space:nowrap">${timeAgo(o.ts)}</td>
       <td class="r"><span class="pill neutral" style="font-size:10.5px">${esc(o.paymentMode||'-')}</span></td>
       <td class="r num"><b>${money(o.total)}</b></td>
-      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button><button class="btn-ghost btn-mini" data-amend="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>Amend</button><button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>${I.undo} ${dead?'Cancelled':'Cancel'}</button></div></td></tr>`;
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button><button class="btn-ghost btn-mini" ${inGrace(o)?`data-backcart="${o.id}"`:`data-amend="${o.id}"`} ${canRev?'':'disabled style="opacity:.4"'}>${inGrace(o)?'Back to cart':'Amend'}</button><button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>${I.undo} ${dead?'Cancelled':'Cancel'}</button></div></td></tr>`;
   }).join('');
   const live=DB.orders.filter(o=>o.status!=='cancelled');
   const rev14=live.reduce((a,o)=>a+o.total,0);
@@ -1303,6 +1329,7 @@ function wire(){
   const osrch=document.getElementById('orderSearch');if(osrch)osrch.oninput=()=>{orderQuery=osrch.value;render();const el=document.getElementById('orderSearch');if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}};
   document.querySelectorAll('[data-viewrcpt]').forEach(b=>b.onclick=()=>{const o=DB.orders.find(x=>x.id===b.dataset.viewrcpt);if(o)showReceipt(o);});
   document.querySelectorAll('[data-amend]').forEach(b=>{if(!b.disabled)b.onclick=()=>amendOrderModal(b.dataset.amend);});
+  document.querySelectorAll('[data-backcart]').forEach(b=>{if(!b.disabled)b.onclick=()=>backToCart(b.dataset.backcart);});
   document.querySelectorAll('[data-revorder]').forEach(b=>{if(b.disabled)return;b.onclick=()=>cancelOrderModal(b.dataset.revorder);});
 
   const form=document.getElementById('issueForm');
