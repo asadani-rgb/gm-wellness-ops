@@ -182,6 +182,7 @@ README.md
 3. `supabase/phase3.sql`  - auditable discounts, soft-cancelled invoices, customer name
 4. `supabase/phase4.sql`  - manager override PIN for discounts above the staff limit
 5. `supabase/phase5.sql`  - multiple branches (**breaking**: deploy the frontend at the same time)
+6. `supabase/phase6.sql`  - amend an issued bill + parked orders
 
 `phase3.sql` is idempotent and prints notices telling you which policies it changed.
 After running it, Team → Add member still needs the `admin-users` Edge Function deployed

@@ -24,7 +24,8 @@ const I = {
   upload:'<svg viewBox="0 0 24 24" fill="none"><path d="M12 20V10m0 0 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
   receipt:'<svg viewBox="0 0 24 24" fill="none"><path d="M6 3h12v18l-2.5-1.5L13 21l-2.5-1.5L8 21l-2-1.5V3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 8h6M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
   cart:'<svg viewBox="0 0 24 24" fill="none"><path d="M3 4h2l2.2 11.2a1.5 1.5 0 0 0 1.5 1.2h8.1a1.5 1.5 0 0 0 1.5-1.2L21 8H6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9.5" cy="20" r="1.3" fill="currentColor"/><circle cx="17.5" cy="20" r="1.3" fill="currentColor"/></svg>',
-  minus:'<svg viewBox="0 0 24 24" fill="none"><path d="M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>'
+  minus:'<svg viewBox="0 0 24 24" fill="none"><path d="M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
+  pause:'<svg viewBox="0 0 24 24" fill="none"><rect x="6" y="5" width="4" height="14" rx="1.3" stroke="currentColor" stroke-width="1.6"/><rect x="14" y="5" width="4" height="14" rx="1.3" stroke="currentColor" stroke-width="1.6"/></svg>'
 };
 
 /* ============================ SUPABASE CLIENT ============================ */
@@ -39,6 +40,9 @@ const DEF_SETTINGS={shopName:'GM Wellness',currency:'INR',legalName:'',gstin:'',
 let DB={ingredients:[],products:[],extras:[],orders:[],orderItems:[],issues:[],users:[],settings:{...DEF_SETTINGS},branches:[],branch:null};
 let me=null, view='sell', lastSale=null, toastTimer=null, manageTab='supplies';
 let activeBranch=null;   // uuid of the branch currently being worked in
+let sellQuery='';        // type-to-add filter on the Sell screen
+let amendingFrom=null;   // invoice id being re-issued, if any
+let parked=[];           // parked orders for this branch
 let cart=[]; // [{uid, pid, name, price, qty, extras:[{id,name,price}]}]
 // Bill format is a per-till/printer choice, remembered on this device (not shop-wide).
 const RC_FORMATS={a4:'A4 / slip',th80:'80 mm',th58:'58 mm'};
@@ -125,12 +129,14 @@ async function loadAll(){
     const map={}; (eprods.data||[]).forEach(m=>{(map[m.extra_id]=map[m.extra_id]||[]).push(m.product_id);});
     DB.extras=extras.data.map(e=>({id:e.id,name:e.name,price:Number(e.price),ingredientId:e.ingredient_id,qty:Number(e.qty),active:e.active,products:map[e.id]||[]}));
   }
+  await loadParked();
   if(orders.data){
     DB.orders=orders.data.map(o=>({id:o.id,invoiceNo:o.invoice_no,gross:Number(o.gross),taxable:Number(o.taxable),cgst:Number(o.cgst),sgst:Number(o.sgst),tax:Number(o.tax),roundOff:Number(o.round_off),total:Number(o.total),paymentMode:o.payment_mode,orderType:o.order_type,ts:new Date(o.created_at).getTime(),
       status:o.status||'active', customerName:o.customer_name||'', overLimit:o.over_limit===true,
       discount:Number(o.discount_amount||0), discountPct:o.discount_pct!=null?Number(o.discount_pct):0,
       discountReason:o.discount_reason||'', discountBy:o.discount_by_name||'',
       cancelledAt:o.cancelled_at?new Date(o.cancelled_at).getTime():0, cancelledBy:o.cancelled_by_name||'', cancelReason:o.cancel_reason||'',
+      replaces:o.replaces||null, replacedBy:o.replaced_by||null,
       items:(o.order_items||[]).map(li=>({id:li.id,pid:li.product_id,name:li.product_name,qty:li.qty,unitPrice:Number(li.unit_price),extras:li.extras||[],lineTotal:Number(li.line_total)}))}));
     // Cancelled invoices stay visible in Orders but must never count as sales.
     DB.orderItems=[]; DB.orders.filter(o=>o.status!=='cancelled').forEach(o=>o.items.forEach(li=>DB.orderItems.push({pid:li.pid,name:li.name,qty:li.qty,lineTotal:li.lineTotal,ts:o.ts})));
@@ -245,17 +251,36 @@ function cartCount(){return cart.reduce((a,l)=>a+l.qty,0);}
 function lineGross(l){return (l.price+l.extras.reduce((s,e)=>s+e.price,0))*l.qty;}
 function cartTotal(){return cart.reduce((a,l)=>a+lineGross(l),0);}
 function cartBar(){ if(!cart.length) return ''; return `<div class="cartbar"><div class="cb-info">${I.cart}<span><b>${cartCount()}</b> item${cartCount()>1?'s':''} · ${money(cartTotal())}</span></div><button class="btn btn-primary" data-goto="checkout">Review order →</button></div>`; }
+function sellMatches(){
+  const q=sellQuery.trim().toLowerCase();
+  if(!q) return DB.products;
+  // starts-with beats contains, so "cap" puts Cappuccino first
+  const starts=DB.products.filter(p=>p.name.toLowerCase().startsWith(q));
+  const has=DB.products.filter(p=>!p.name.toLowerCase().startsWith(q)&&p.name.toLowerCase().includes(q));
+  return starts.concat(has);
+}
+function quickAdd(p){
+  if(!p) return;
+  const {cups}=cupCapacity(p);
+  if(cups<=0){toast(`${p.name} is out of stock`,I.issues);return;}
+  const same=cart.find(l=>l.pid===p.id&&l.extras.length===0);
+  if(same){same.qty++;} else {
+    cart.push({uid:'c'+Date.now()+Math.random().toString(36).slice(2,6),pid:p.id,name:p.name,price:p.price,qty:1,extras:[]});
+  }
+  sellQuery=''; render(); toast(`Added ${p.name}`,I.cart);
+}
 function viewSell(){
   const lowItems=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').sort((a,b)=>ratio(a)-ratio(b));
   const lowCount=lowItems.length; const lowNames=lowItems.map(x=>x.name);
-  const cards=DB.products.map(p=>{
+  const list=sellMatches();
+  const cards=list.map((p,idx)=>{
     const {cups,limitId}=cupCapacity(p); const lim=ing(limitId);
     const rq=limitId?p.recipe.find(r=>r[0]===limitId)[1]:1;
     const target=lim?Math.max(cups,Math.floor(lim.par/rq)):cups;
     const pct=target?Math.round(cups/target*100):0;
     const s=cups<8?'crit':cups<20?'warn':(pct<40?'warn':'good');
     const disabled=cups<=0; const nEx=extrasFor(p.id).length;
-    return `<div class="card prod ${disabled?'out':''}">
+    return `<div class="card prod ${disabled?'out':''} ${(sellQuery&&idx===0)?'top-match':''}">
       <div class="p-top"><h3>${esc(p.name)}</h3><span class="price">${money(p.price)}</span></div>
       <div class="cups"><b class="num">${cups}</b> cups can be made</div>
       <div class="bar ${s}"><i style="width:${Math.max(disabled?0:4,pct)}%"></i></div>
@@ -266,21 +291,37 @@ function viewSell(){
   return `<div class="page-head">
       <div><h1>Sell coffee</h1><div class="ph-sub">Add drinks &amp; extras to the order, then review with the customer.</div></div>
       ${lowCount?`<button class="pill warn" data-goto="stock" data-tip="Tap to open Stock. Needs restock: ${esc(lowNames.join(', '))}" style="border:none;cursor:pointer;text-align:left;max-width:100%;white-space:normal">${I.issues} Restock: ${esc(lowNames.slice(0,3).join(', '))}${lowNames.length>3?` +${lowNames.length-3} more`:''}</button>`:`<span class="pill good">${I.check} All stock healthy</span>`}
-    </div><div class="grid sell-grid">${cards}</div>${cartBar()}`;
+    </div>
+    <div class="sell-tools">
+      <div class="sell-search">
+        <input id="sellSearch" class="m-input" placeholder="Search a drink — or just start typing" value="${esc(sellQuery)}" autocomplete="off" aria-label="Search drinks">
+        ${sellQuery?`<button class="icon-btn" id="sellClear" aria-label="Clear search">${I.close}</button>`:''}
+      </div>
+      <span class="kbd-hint"><b>↵</b> add top match · <b>⇧↵</b> choose extras · <b>esc</b> clear</span>
+      ${parkTools()}
+    </div>
+    ${list.length?`<div class="grid sell-grid">${cards}</div>`
+      :`<div class="card card-pad"><div class="empty">No drink matches “${esc(sellQuery)}”.</div></div>`}
+    ${cartBar()}`;
 }
-function openAddModal(pid){
+// editUid set => we are editing an existing cart line instead of adding one
+function openAddModal(pid,editUid){
   const p=DB.products.find(x=>x.id===pid); if(!p)return;
-  const exs=extrasFor(pid); let qty=1; const sel={};
+  const line=editUid?cart.find(l=>l.uid===editUid):null;
+  const exs=extrasFor(pid); let qty=line?line.qty:1; const sel={};
+  if(line) line.extras.forEach(e=>{sel[e.id]=true;});
+  let typedQty='';   // digits typed in a row set the quantity outright
   const root=document.getElementById('modalRoot');
   const lineTot=()=>{let ex=0;exs.forEach(e=>{if(sel[e.id])ex+=e.price;});return (p.price+ex)*qty;};
   function draw(){
     root.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="Add ${esc(p.name)}">
-      <div class="modal-head"><h3>${esc(p.name)}</h3><button class="icon-btn" id="mx">${I.close}</button></div>
+      <div class="modal-head"><h3>${line?'Edit — ':''}${esc(p.name)}</h3><button class="icon-btn" id="mx">${I.close}</button></div>
       <div class="modal-body">
         <div class="addrow"><span>Quantity</span><div class="qty"><button class="icon-btn" id="qminus" aria-label="Decrease">${I.minus}</button><b id="qval">${qty}</b><button class="icon-btn" id="qplus" aria-label="Increase">${I.plus}</button></div></div>
         ${exs.length?`<div class="lab" style="margin-top:16px">Extras</div>${exs.map(e=>`<label class="exrow"><span><input type="checkbox" data-ex="${e.id}" ${sel[e.id]?'checked':''}> ${esc(e.name)}</span><span class="expr ${e.price>0?'':'free'}">${e.price>0?('+ '+money(e.price)):'Free'}</span></label>`).join('')}`:'<div class="help" style="margin-top:14px">No extras configured for this drink.</div>'}
       </div>
-      <div class="modal-foot"><button class="btn-ghost" id="mcancel">Cancel</button><button class="btn btn-primary" id="madd">${I.cart} Add · <span id="mlt">${money(lineTot())}</span></button></div>
+      <div class="modal-foot"><span class="kbd-hint"><b>↵</b> ${line?'save':'add'} · <b>esc</b> close · type a number for qty</span>
+        <button class="btn-ghost" id="mcancel">Cancel</button><button class="btn btn-primary" id="madd">${I.cart} ${line?'Save':'Add'} · <span id="mlt">${money(lineTot())}</span></button></div>
     </div></div>`;
     const close=()=>root.innerHTML='';
     document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
@@ -288,13 +329,95 @@ function openAddModal(pid){
     document.getElementById('qminus').onclick=()=>{if(qty>1){qty--;draw();}};
     document.getElementById('qplus').onclick=()=>{qty++;draw();};
     root.querySelectorAll('[data-ex]').forEach(cb=>cb.onchange=()=>{sel[cb.dataset.ex]=cb.checked;document.getElementById('mlt').textContent=money(lineTot());});
-    document.getElementById('madd').onclick=()=>{
+    const commit=()=>{
       const chosen=exs.filter(e=>sel[e.id]).map(e=>({id:e.id,name:e.name,price:e.price}));
-      cart.push({uid:'c'+Date.now()+Math.random().toString(36).slice(2,6),pid:p.id,name:p.name,price:p.price,qty,extras:chosen});
-      close(); render(); toast(`Added ${qty}× ${p.name}`,I.cart);
+      if(line){ line.qty=qty; line.extras=chosen; close(); render(); toast(`Updated ${p.name}`,I.check); }
+      else { cart.push({uid:'c'+Date.now()+Math.random().toString(36).slice(2,6),pid:p.id,name:p.name,price:p.price,qty,extras:chosen});
+             close(); render(); toast(`Added ${qty}× ${p.name}`,I.cart); }
     };
+    document.getElementById('madd').onclick=commit;
+    // keyboard: Enter commits, Esc closes, digits set the quantity
+    root.onkeydown=e=>{
+      if(e.key==='Enter'){e.preventDefault();commit();return;}
+      if(e.key==='Escape'){e.preventDefault();close();return;}
+      if(/^[0-9]$/.test(e.key)){
+        if(e.target&&/INPUT|TEXTAREA|SELECT/.test(e.target.tagName))return;
+        e.preventDefault();
+        typedQty=(typedQty+e.key).slice(-3);
+        const n=parseInt(typedQty,10); if(n>0){qty=n;draw();
+          const el=document.getElementById('qval'); if(el) el.classList.add('flash');}
+        return;}
+      if(e.key==='Backspace'&&typedQty){e.preventDefault();typedQty='';}
+    };
+    const md=root.querySelector('.modal'); if(md){md.tabIndex=-1;md.focus();}
   }
   draw();
+}
+
+/* ---------- PARK / RECALL ---------- */
+// A parked order is only a saved cart: no stock movement, no invoice number.
+function parkTools(){
+  if(!parked.length&&!cart.length) return '';
+  return `<div class="park-tools">
+    ${cart.length?`<button class="btn-ghost btn-mini" id="parkBtn">${I.pause} Park order</button>`:''}
+    ${parked.length?`<button class="btn-ghost btn-mini" id="parkedBtn">${I.cart} Parked · ${parked.length}</button>`:''}
+  </div>`;
+}
+async function loadParked(){
+  if(!activeBranch){parked=[];return;}
+  const {data,error}=await sb.from('parked_orders').select('*').eq('branch_id',activeBranch).order('created_at',{ascending:false});
+  parked=error?[]:(data||[]).map(r=>({id:r.id,label:r.label,payload:r.payload||{},n:r.item_count,total:Number(r.total_est||0),
+    by:r.created_by_name||'—',ts:new Date(r.created_at).getTime()}));
+}
+function parkOrderModal(){
+  if(!cart.length) return;
+  const dflt='Order '+(parked.length+1);
+  openModal({title:'Park this order',confirmLabel:'Park it',
+    body:`<p style="margin:0 0 12px;color:var(--ink-soft);font-size:14.5px">Saves the order so you can serve someone else and come back to it. Nothing is billed and no stock moves.</p>
+      <label class="lab" for="pk-label">Label</label>
+      <input class="m-input" id="pk-label" value="${esc(dflt)}" placeholder="e.g. Table 4, blue jacket">
+      <div class="help">Everyone on the till at ${esc((DB.branch&&DB.branch.name)||'this branch')} can recall it.</div>`,
+    onConfirm:root=>{
+      const label=root.querySelector('#pk-label').value.trim()||dflt;
+      (async()=>{
+        const {error}=await sb.from('parked_orders').insert({branch_id:activeBranch,label,
+          payload:{items:cart,co:coState},item_count:cartCount(),total_est:cartTotal(),
+          created_by:me.id,created_by_name:me.name});
+        if(error){toast(error.message||'Could not park the order',I.issues);return;}
+        cart=[]; resetCheckoutState(); amendingFrom=null;
+        await loadParked(); view='sell'; renderNav(); render(); toast(`Parked as “${label}”`,I.check);
+      })();
+    }});
+}
+function parkedListModal(){
+  const root=document.getElementById('modalRoot');
+  const rows=parked.map(pk=>`<div class="park-row">
+      <div><b>${esc(pk.label)}</b><div class="help" style="margin:0">${pk.n} item${pk.n===1?'':'s'} · ${money(pk.total)} · ${esc(pk.by)} · ${timeAgo(pk.ts)}</div></div>
+      <div style="display:flex;gap:6px">
+        <button class="btn-ghost btn-mini" data-recall="${pk.id}">Recall</button>
+        <button class="icon-btn" data-unpark="${pk.id}" aria-label="Discard" style="width:32px;height:32px">${I.trash}</button>
+      </div></div>`).join('');
+  openModal({title:'Parked orders',confirmLabel:'Done',
+    body:rows||'<div class="empty">Nothing parked right now.</div>'});
+  root.querySelectorAll('[data-recall]').forEach(b=>b.onclick=()=>recallParked(b.dataset.recall));
+  root.querySelectorAll('[data-unpark]').forEach(b=>b.onclick=()=>{
+    const pk=parked.find(x=>x.id===b.dataset.unpark);
+    confirmModal('Discard this parked order?',`“${esc(pk?pk.label:'')}” will be removed. Nothing was billed.`,'Discard',async()=>{
+      await sb.from('parked_orders').delete().eq('id',b.dataset.unpark);
+      await loadParked(); render(); toast('Parked order discarded',I.trash);},true);});
+}
+async function recallParked(id){
+  const pk=parked.find(x=>x.id===id); if(!pk) return;
+  const go=async()=>{
+    cart=(pk.payload.items||[]).map(l=>({...l,uid:'c'+Date.now()+Math.random().toString(36).slice(2,6)}));
+    if(pk.payload.co) coState={...coState,...pk.payload.co};
+    await sb.from('parked_orders').delete().eq('id',id);
+    await loadParked();
+    document.getElementById('modalRoot').innerHTML='';
+    view='checkout'; renderNav(); render(); toast(`Recalled “${pk.label}”`,I.check);
+  };
+  if(cart.length) confirmModal('Replace the current order?',`The order on screen will be cleared and “${esc(pk.label)}” loaded instead.`,'Replace',go,true);
+  else go();
 }
 
 /* ---------- CHECKOUT ---------- */
@@ -342,7 +465,7 @@ function refreshDisc(){
 }
 function viewCheckout(){
   if(!cart.length) return `<div class="page-head"><div><h1>Review order</h1></div></div><div class="card card-pad"><div class="empty">Your order is empty.</div><div style="text-align:center;margin-top:8px"><button class="btn btn-primary" data-goto="sell">Back to Sell</button></div></div>`;
-  const rows=cart.map(l=>`<div class="co-row"><div class="co-main"><b>${esc(l.name)}</b>${l.extras.length?`<div class="co-ex">+ ${l.extras.map(e=>esc(e.name)+(e.price>0?` (${money(e.price)})`:'')).join(', ')}</div>`:''}</div>
+  const rows=cart.map(l=>`<div class="co-row"><button class="co-main" data-cedit="${l.uid}" title="Edit this line"><b>${esc(l.name)}</b>${l.extras.length?`<div class="co-ex">+ ${l.extras.map(e=>esc(e.name)+(e.price>0?` (${money(e.price)})`:'')).join(', ')}</div>`:'<div class="co-ex co-hint">tap to add extras</div>'}</button>
       <div class="qty"><button class="icon-btn" data-cq="-" data-uid="${l.uid}" aria-label="Decrease">${I.minus}</button><b>${l.qty}</b><button class="icon-btn" data-cq="+" data-uid="${l.uid}" aria-label="Increase">${I.plus}</button></div>
       <div class="co-amt num">${money(lineGross(l))}</div>
       <button class="icon-btn" data-crm="${l.uid}" aria-label="Remove" style="width:32px;height:32px">${I.trash}</button></div>`).join('');
@@ -382,7 +505,10 @@ function viewCheckout(){
       <div class="help" id="discNote" style="margin-top:10px"></div>
     </div>`;
 
-  return `<div class="page-head"><div><h1>Review order</h1><div class="ph-sub">Confirm with the customer, then submit.</div></div><button class="btn-ghost" data-goto="sell">${I.plus} Add more</button></div>
+  const amO=amendingFrom?DB.orders.find(x=>x.id===amendingFrom):null;
+  return `<div class="page-head"><div><h1>Review order</h1><div class="ph-sub">Confirm with the customer, then submit.</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${cart.length?`<button class="btn-ghost" id="parkBtn2">${I.pause} Park</button>`:''}<button class="btn-ghost" data-goto="sell">${I.plus} Add more</button></div></div>
+    ${amO?`<div class="alert-danger" style="margin:0 0 14px">Re-issuing <b>${esc(amO.invoiceNo||'')}</b>, which is now cancelled. Submitting will create a new invoice number linked to it.</div>`:''}
     <div class="grid two-col">
       <div class="card card-pad"><div class="section-title">Items · ${cartCount()}</div><div style="margin-top:8px">${rows}</div>${discBlock}</div>
       <div class="card card-pad">
@@ -405,6 +531,7 @@ async function submitOrder(){
   const payload={branch_id:activeBranch,payment_mode:coState.paymentMode,order_type:(DB.settings.orderTypeOn!==false)?coState.orderType:null,
     customer_name:(coState.customerName||'').trim()||null,
     items:cart.map(l=>({product_id:l.pid,qty:l.qty,extras:l.extras.map(e=>e.id)}))};
+  if(amendingFrom) payload.replaces=amendingFrom;
   if(d.amt>0){
     payload.discount_reason=d.reason;
     if(coState.discMode==='amt') payload.discount_amount=d.amt; else payload.discount_pct=Number(coState.discPct)||0;
@@ -413,7 +540,7 @@ async function submitOrder(){
   const btn=document.getElementById('submitOrder'); if(btn){btn.disabled=true;btn.textContent='Submitting…';}
   const {data,error}=await sb.rpc('record_order',{p_payload:payload});
   if(error){if(btn){btn.disabled=false;btn.innerHTML=I.check+' Submit & generate bill';}toast(error.message||'Could not submit order',I.issues);return;}
-  cart=[]; resetCheckoutState(); await loadAll();
+  cart=[]; resetCheckoutState(); amendingFrom=null; await loadAll();
   const ord=DB.orders.find(o=>o.id===data);
   view='sell'; renderNav(); render();
   if(ord) showReceipt(ord); else toast('Order recorded',I.check);
@@ -493,13 +620,16 @@ function showReceipt(o){
       <div class="rc-fmtbar"><span class="lab" style="margin:0">Paper</span><div class="seg-inline" role="group" aria-label="Bill format">${seg()}</div></div>
       <div id="rcBody">${receiptHTML(o)}</div>
     </div>
-    <div class="modal-foot"><button class="btn-ghost" id="rcClose">Close</button><button class="btn-ghost" id="rcPdf">${I.download} PDF</button><button class="btn btn-primary" id="rcPrint">${I.receipt} Print / Save PDF</button></div>
+    <div class="modal-foot">
+      ${(o.status!=='cancelled'&&(isAdmin()||o.ts>Date.now()-86400000))?`<button class="btn-ghost" id="rcAmend" style="color:var(--crit)">${I.undo} Amend</button>`:''}
+      <button class="btn-ghost" id="rcClose">Close</button><button class="btn-ghost" id="rcPdf">${I.download} PDF</button><button class="btn btn-primary" id="rcPrint">${I.receipt} Print / Save PDF</button></div>
   </div></div>`;
   const close=()=>{root.innerHTML='';applyReceiptPage('a4');};
   document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
   document.getElementById('rcClose').onclick=close;
   document.getElementById('rcPrint').onclick=()=>window.print();
   document.getElementById('rcPdf').onclick=()=>downloadReceiptPDF(o);
+  const am=document.getElementById('rcAmend'); if(am) am.onclick=()=>{close();amendOrderModal(o.id);};
   root.querySelectorAll('[data-rcf]').forEach(b=>b.onclick=()=>{rcFmt=b.dataset.rcf;rcFmtSet(rcFmt);paint();});
   applyReceiptPage(rcFmt);
 }
@@ -553,6 +683,60 @@ function downloadReceiptPDF(o,fmt){
   }catch(e){window.print();}
 }
 
+/* ---------- AMEND AN ISSUED BILL ---------- */
+// A numbered tax invoice cannot be edited, so amending means: cancel it, put
+// the whole order back in the cart, and issue a linked replacement.
+function cartFromOrder(o){
+  const missing=[];
+  const lines=o.items.map(li=>{
+    const prod=DB.products.find(x=>x.id===li.pid);
+    if(!prod){missing.push(li.name);return null;}
+    const extras=(li.extras||[]).map(sx=>{
+      let e=sx.id?DB.extras.find(x=>x.id===sx.id):null;                     // phase6 snapshots carry the id
+      if(!e) e=DB.extras.find(x=>x.name.toLowerCase()===String(sx.name||'').toLowerCase()); // older ones: match by name
+      if(!e){missing.push(sx.name);return null;}
+      return {id:e.id,name:e.name,price:e.price};
+    }).filter(Boolean);
+    return {uid:'c'+Date.now()+Math.random().toString(36).slice(2,6),pid:prod.id,name:prod.name,price:prod.price,qty:li.qty,extras};
+  }).filter(Boolean);
+  return {lines,missing};
+}
+function amendOrderModal(id){
+  const o=DB.orders.find(x=>x.id===id); if(!o) return;
+  if(o.status==='cancelled'){toast('That invoice is already cancelled',I.issues);return;}
+  const {lines,missing}=cartFromOrder(o);
+  if(!lines.length){toast('Nothing on that bill can be re-ordered — the drinks no longer exist',I.issues);return;}
+  const repriced=o.items.some(li=>{const p=DB.products.find(x=>x.id===li.pid);return p&&Number(p.price)!==Number(li.unitPrice);});
+  openModal({title:'Amend '+(o.invoiceNo||'this bill'),confirmLabel:'Amend the bill',danger:true,
+    body:`<p style="margin:0 0 12px;color:var(--ink-soft);font-size:14.5px">A tax invoice can't be edited once issued, so this <b>cancels ${esc(o.invoiceNo||'')}</b> and puts the whole order back in the cart. When you submit, a <b>new invoice number</b> is issued and the two are linked.</p>
+      <div class="alert-danger" style="margin-top:0">Stock goes back on the shelf, and the old bill stays visible as CANCELLED — replaced by the new one.</div>
+      ${missing.length?`<div class="warn-msg" style="margin-top:10px">⚠ Not carried over (no longer on the menu): ${esc([...new Set(missing)].join(', '))}</div>`:''}
+      ${repriced?`<div class="warn-msg" style="margin-top:10px">⚠ Some prices have changed since this bill — the new one uses today's prices.</div>`:''}
+      <label class="lab" for="am-reason" style="margin-top:12px">Reason <span style="color:var(--crit)">*</span></label>
+      <select class="m-input" id="am-reason">
+        <option value="">Choose a reason…</option>
+        ${['Customer changed the order','Wrong item rung up','Wrong quantity','Wrong payment mode','Discount correction','Other (type below)'].map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}
+      </select>
+      <input class="m-input" id="am-text" style="margin-top:8px" placeholder="More detail (required if you picked Other)">`,
+    onConfirm:root=>{
+      const sel=root.querySelector('#am-reason').value, txt=root.querySelector('#am-text').value.trim();
+      const reason=(!sel||sel==='Other (type below)')?txt:(txt?sel+' — '+txt:sel);
+      if(!reason){toast('A reason is required to amend a bill',I.issues);return false;}
+      (async()=>{
+        const {error}=await sb.rpc('cancel_order',{p_order_id:o.id,p_reason:'Amended: '+reason});
+        if(error){toast(error.message||'Could not cancel the original',I.issues);return;}
+        cart=lines; amendingFrom=o.id;
+        coState={...coState,orderType:o.orderType||coState.orderType,paymentMode:o.paymentMode||coState.paymentMode,
+          customerName:o.customerName||'',discMode:'pct',discPct:0,discAmt:0,discCustom:false,reasonPreset:'',reasonText:'',pin:''};
+        if(o.discount>0){ coState.discCustom=true; coState.discMode='amt'; coState.discAmt=o.discount;
+          coState.reasonPreset='Other (type below)'; coState.reasonText=o.discountReason||'Carried over from '+(o.invoiceNo||''); }
+        await loadAll();
+        view='checkout'; renderNav(); render();
+        toast(`${o.invoiceNo} cancelled — edit and submit to re-issue`,I.undo);
+      })();
+    }});
+}
+
 /* ---------- ORDERS (history) ---------- */
 let orderQuery='';
 function viewOrders(){
@@ -563,13 +747,17 @@ function viewOrders(){
     const dead=o.status==='cancelled';
     const canRev=!dead&&(me.role==='admin'||o.ts>now-DAY);
     const items=o.items.map(li=>`${li.qty}× ${esc(li.name)}`).join(', ');
-    return `<tr${dead?' class="row-void"':''}><td><b>${esc(o.invoiceNo||'-')}</b>${dead?' <span class="pill crit" style="font-size:10px">CANCELLED</span>':''}${o.discount>0?` <span class="pill warn" style="font-size:10px">−${money(o.discount)}</span>`:''}
+    const repBy=o.replacedBy?DB.orders.find(x=>x.id===o.replacedBy):null;
+    const reps=o.replaces?DB.orders.find(x=>x.id===o.replaces):null;
+    return `<tr${dead?' class="row-void"':''}><td><b>${esc(o.invoiceNo||'-')}</b>${dead?' <span class="pill crit" style="font-size:10px">CANCELLED</span>':''}${o.replaces?' <span class="pill neutral" style="font-size:10px">RE-ISSUED</span>':''}${o.discount>0?` <span class="pill warn" style="font-size:10px">−${money(o.discount)}</span>`:''}
         <div style="font-size:11.5px;color:var(--ink-faint)">${esc(items)}${o.customerName?' · '+esc(o.customerName):''}</div>
-        ${dead?`<div style="font-size:11px;color:var(--crit)">${esc(o.cancelReason||'Cancelled')}${o.cancelledBy?' · '+esc(o.cancelledBy):''}</div>`:''}</td>
+        ${dead?`<div style="font-size:11px;color:var(--crit)">${esc(o.cancelReason||'Cancelled')}${o.cancelledBy?' · '+esc(o.cancelledBy):''}</div>`:''}
+        ${repBy?`<div style="font-size:11px;color:var(--ink-faint)">→ replaced by <b>${esc(repBy.invoiceNo||'')}</b></div>`:''}
+        ${reps?`<div style="font-size:11px;color:var(--ink-faint)">↩ replaces <b>${esc(reps.invoiceNo||'')}</b></div>`:''}</td>
       <td style="font-size:12.5px;color:var(--ink-soft);white-space:nowrap">${timeAgo(o.ts)}</td>
       <td class="r"><span class="pill neutral" style="font-size:10.5px">${esc(o.paymentMode||'-')}</span></td>
       <td class="r num"><b>${money(o.total)}</b></td>
-      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button><button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>${I.undo} ${dead?'Cancelled':'Cancel'}</button></div></td></tr>`;
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn-ghost btn-mini" data-viewrcpt="${o.id}">${I.receipt} Bill</button><button class="btn-ghost btn-mini" data-amend="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>Amend</button><button class="btn-ghost btn-mini" data-revorder="${o.id}" ${canRev?'':'disabled style="opacity:.4"'}>${I.undo} ${dead?'Cancelled':'Cancel'}</button></div></td></tr>`;
   }).join('');
   const live=DB.orders.filter(o=>o.status!=='cancelled');
   const rev14=live.reduce((a,o)=>a+o.total,0);
@@ -1052,6 +1240,24 @@ async function logIssue(id,amount,mode,reason){const {error}=await sb.rpc('log_i
 function wire(){
   document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>go(b.dataset.goto));
   document.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>openAddModal(b.dataset.add));
+  document.querySelectorAll('[data-cedit]').forEach(b=>b.onclick=()=>{
+    const l=cart.find(x=>x.uid===b.dataset.cedit); if(l) openAddModal(l.pid,l.uid);});
+  // park / recall
+  const pkB=document.getElementById('parkBtn');   if(pkB) pkB.onclick=parkOrderModal;
+  const pkB2=document.getElementById('parkBtn2'); if(pkB2) pkB2.onclick=parkOrderModal;
+  const pkL=document.getElementById('parkedBtn'); if(pkL) pkL.onclick=parkedListModal;
+  // type-to-add search
+  const ss=document.getElementById('sellSearch');
+  if(ss){
+    ss.oninput=()=>{const pos=ss.selectionStart;sellQuery=ss.value;render();
+      const el=document.getElementById('sellSearch');
+      if(el){el.focus();try{el.setSelectionRange(pos,pos);}catch(e){}}};
+    ss.onkeydown=e=>{
+      if(e.key==='Enter'){e.preventDefault();const m=sellMatches();if(!m.length)return;
+        if(e.shiftKey) openAddModal(m[0].id); else quickAdd(m[0]);return;}
+      if(e.key==='Escape'){e.preventDefault();sellQuery='';render();}};
+  }
+  const sc=document.getElementById('sellClear'); if(sc) sc.onclick=()=>{sellQuery='';render();};
   // checkout / cart
   document.querySelectorAll('[data-cq]').forEach(b=>b.onclick=()=>{const l=cart.find(x=>x.uid===b.dataset.uid);if(!l)return;if(b.dataset.cq==='+')l.qty++;else if(l.qty>1)l.qty--;render();});
   document.querySelectorAll('[data-crm]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.uid!==b.dataset.crm);render();});
@@ -1096,6 +1302,7 @@ function wire(){
   // orders history
   const osrch=document.getElementById('orderSearch');if(osrch)osrch.oninput=()=>{orderQuery=osrch.value;render();const el=document.getElementById('orderSearch');if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}};
   document.querySelectorAll('[data-viewrcpt]').forEach(b=>b.onclick=()=>{const o=DB.orders.find(x=>x.id===b.dataset.viewrcpt);if(o)showReceipt(o);});
+  document.querySelectorAll('[data-amend]').forEach(b=>{if(!b.disabled)b.onclick=()=>amendOrderModal(b.dataset.amend);});
   document.querySelectorAll('[data-revorder]').forEach(b=>{if(b.disabled)return;b.onclick=()=>cancelOrderModal(b.dataset.revorder);});
 
   const form=document.getElementById('issueForm');
@@ -1579,6 +1786,26 @@ async function signOut(){await sb.auth.signOut();me=null;document.getElementById
   document.getElementById('logoutBtn').onclick=signOut;document.getElementById('logoutBtn2').onclick=signOut;
   document.addEventListener('keydown',e=>{if(e.key==='Escape'){const r=document.getElementById('modalRoot');if(r.innerHTML)r.innerHTML='';}});
   sb.auth.getSession().then(({data})=>{if(data&&data.session)afterLogin();});
+})();
+
+/* ============================ GLOBAL KEYBOARD ============================ */
+// Never auto-focus the search box: on a tablet that pops the on-screen
+// keyboard. It only wakes when a real key is pressed.
+(function initKeys(){
+  const typingIn=el=>el&&(/INPUT|TEXTAREA|SELECT/.test(el.tagName)||el.isContentEditable);
+  document.addEventListener('keydown',e=>{
+    if(!me) return;
+    if(document.getElementById('modalRoot').innerHTML) return;   // modals handle their own keys
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
+    if(e.key==='Escape'&&view==='sell'&&sellQuery){e.preventDefault();sellQuery='';render();return;}
+    if(typingIn(e.target)) return;
+    if(view==='sell'&&/^[a-zA-Z0-9]$/.test(e.key)){
+      e.preventDefault(); sellQuery+=e.key; render();
+      const el=document.getElementById('sellSearch');
+      if(el){el.focus();try{el.setSelectionRange(el.value.length,el.value.length);}catch(x){}}
+      return;}
+    if(e.key==='Enter'&&view==='sell'&&cart.length){e.preventDefault();go('checkout');}
+  });
 })();
 
 /* ============================ TOOLTIPS ============================ */

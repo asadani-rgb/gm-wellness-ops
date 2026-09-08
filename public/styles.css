@@ -408,6 +408,23 @@
     background:color-mix(in srgb, var(--crit) 12%, transparent);
     border:1px solid color-mix(in srgb, var(--crit) 45%, transparent);color:var(--crit)}
   .alert-danger b{color:var(--crit)}
+  /* --- keyboard, search, parking, editable cart lines --- */
+  .kbd-hint{font-size:11px;color:var(--ink-faint);margin-right:auto}
+  .kbd-hint b{display:inline-block;min-width:16px;padding:1px 4px;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:4px;font-size:10px;font-weight:600;text-align:center;color:var(--ink-soft)}
+  .sell-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .sell-search{position:relative;display:flex;align-items:center;gap:6px;flex:1;min-width:220px;max-width:380px}
+  .sell-search .m-input{flex:1}
+  .park-tools{display:flex;gap:8px;margin-left:auto}
+  .park-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px;
+    border:1px solid var(--line);border-radius:10px;margin-bottom:8px}
+  .prod.top-match{outline:2px solid var(--accent,var(--good));outline-offset:2px}
+  button.co-main{display:block;width:100%;text-align:left;background:none;border:none;font:inherit;color:inherit;
+    padding:0;cursor:pointer;border-radius:6px}
+  button.co-main:hover{opacity:.75}
+  .co-hint{opacity:.55;font-style:italic}
+  #qval.flash{animation:qflash .35s ease}
+  @keyframes qflash{0%{transform:scale(1)}45%{transform:scale(1.35)}100%{transform:scale(1)}}
   /* --- branches --- */
   .branch-bar{padding:10px 12px;margin:0 10px 8px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2,transparent)}
   .branch-bar .bl{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);margin-bottom:4px;font-weight:600}

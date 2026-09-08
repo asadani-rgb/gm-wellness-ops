@@ -30,6 +30,8 @@ supabase/
                recipe snapshot on order_items — run once, after phase2
   phase4.sql   manager override PIN for discounts above the staff limit (shop_secrets, bcrypt
                hash, set_override_pin/has_override_pin, orders.over_limit) — run once, after phase3
+  phase6.sql   amend an issued bill (orders.replaces/replaced_by, extra ids in the order_items
+               snapshot) + parked_orders — run once, after phase5
   phase5.sql   MULTI-BRANCH: branches table, branch_id on every data table, per-branch GST identity
                and invoice series, branch-scoped RLS, create_branch (copy-from) + wipe_branch,
                admin_audit — run once, after phase4. BREAKING: deploy the frontend at the same time.
@@ -89,6 +91,33 @@ supplies, and stock starts at zero — after which the two drift apart freely.
 - **Analytics:** revenue, #orders, cups, top seller, daily volume, stock situation (cancelled excluded).
 - **Admin:** Supplies, Coffees (recipes), Extras, Team (add/reset/remove via Edge Function), Settings
   (shop + GST/invoice + backup export/import).
+
+## Till speed: keyboard
+- Just **start typing** on the Sell screen and the search wakes up — no click, no focus needed.
+  **Enter** adds the top match straight to the cart (stacking an existing plain line rather than
+  duplicating it); **Shift+Enter** opens the extras modal instead; **Esc** clears.
+- In the add/edit modal: **Enter** = add/save, **Esc** = close, and **typing digits sets the
+  quantity** outright (type `3`, Enter — three cups).
+- **Enter on the Sell screen with a full cart** jumps to Review.
+- The search input is deliberately **never auto-focused** — on a tablet that pops the on-screen
+  keyboard and eats the screen. It only wakes on a real keypress. Every button still works by touch.
+
+## Editing an order
+- **Before submit:** click any cart line on the Review screen to reopen it and change quantity or
+  extras in place. It replaces that line rather than adding a second one.
+- **After submit — "Amend":** a tax invoice can't lawfully be edited once numbered, so Amend
+  **cancels** the original and drops the whole order back into the cart (extras, discount, payment
+  mode, customer name). Submitting issues a **new** number, and the two are linked both ways
+  (`orders.replaces` / `orders.replaced_by`) so Orders shows "→ replaced by …" and "↩ replaces …".
+  The DB refuses re-issuing before cancelling, and refuses replacing the same invoice twice.
+  Available from the receipt and the Orders list, under the same 24h-staff / anytime-admin rule as
+  cancelling. Prices come from today's menu, and the modal warns if any have moved.
+
+## Parked orders
+A parked order is **only a saved cart** — no stock movement, no invoice number. Park it under a
+label ("Table 4"), serve someone else, recall it later. Shared across tills at the same branch, so
+one till can park and another can recall. RLS is branch-scoped; staff can park and clear their own
+branch's, and cannot park into another branch.
 
 ## Per-serving standards (defaults + warning ranges)
 beans 18 g/shot (7–25) · milk splash 40 ml / full 150 ml (20–200) · powders 10 g (5–20) ·
