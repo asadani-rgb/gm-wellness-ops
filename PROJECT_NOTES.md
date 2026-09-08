@@ -98,7 +98,11 @@ supplies, and stock starts at zero — after which the two drift apart freely.
   duplicating it); **Shift+Enter** opens the extras modal instead; **Esc** clears.
 - In the add/edit modal: **Enter** = add/save, **Esc** = close, and **typing digits sets the
   quantity** outright (type `3`, Enter — three cups).
-- **Enter on the Sell screen with a full cart** jumps to Review.
+- **Enter on the Sell screen only ever ADDS.** It used to jump to Review once the cart had items,
+  which meant the same key on the same screen did two different things depending on whether focus
+  happened to still be in the search box - a second Enter silently bounced you out mid-order.
+  Review now has its own keys: **F2** or **Ctrl/Cmd+Enter**. Adding also keeps the caret in the
+  search box, so `cap↵ esp↵ moc↵` works as a run.
 - The search input is deliberately **never auto-focused** — on a tablet that pops the on-screen
   keyboard and eats the screen. It only wakes on a real keypress. Every button still works by touch.
 

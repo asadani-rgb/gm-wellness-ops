@@ -267,7 +267,10 @@ function quickAdd(p){
   if(same){same.qty++;} else {
     cart.push({uid:'c'+Date.now()+Math.random().toString(36).slice(2,6),pid:p.id,name:p.name,price:p.price,qty:1,extras:[]});
   }
-  sellQuery=''; render(); toast(`Added ${p.name}`,I.cart);
+  sellQuery=''; render();
+  // stay in the box so "cap↵ esp↵ moc↵" works without the caret escaping
+  const el=document.getElementById('sellSearch'); if(el) el.focus();
+  toast(`Added ${p.name}`,I.cart);
 }
 function viewSell(){
   const lowItems=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').sort((a,b)=>ratio(a)-ratio(b));
@@ -297,7 +300,7 @@ function viewSell(){
         <input id="sellSearch" class="m-input" placeholder="Search a drink — or just start typing" value="${esc(sellQuery)}" autocomplete="off" aria-label="Search drinks">
         ${sellQuery?`<button class="icon-btn" id="sellClear" aria-label="Clear search">${I.close}</button>`:''}
       </div>
-      <span class="kbd-hint"><b>↵</b> add top match · <b>⇧↵</b> choose extras · <b>esc</b> clear</span>
+      <span class="kbd-hint"><b>↵</b> add · <b>⇧↵</b> extras · <b>esc</b> clear${cart.length?' · <b>F2</b> review':''}</span>
       ${parkTools()}
     </div>
     ${list.length?`<div class="grid sell-grid">${cards}</div>`
@@ -1293,6 +1296,7 @@ function wire(){
       const el=document.getElementById('sellSearch');
       if(el){el.focus();try{el.setSelectionRange(pos,pos);}catch(e){}}};
     ss.onkeydown=e=>{
+      if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();if(cart.length)go('checkout');return;}
       if(e.key==='Enter'){e.preventDefault();const m=sellMatches();if(!m.length)return;
         if(e.shiftKey) openAddModal(m[0].id); else quickAdd(m[0]);return;}
       if(e.key==='Escape'){e.preventDefault();sellQuery='';render();}};
@@ -1837,6 +1841,12 @@ async function signOut(){await sb.auth.signOut();me=null;document.getElementById
   document.addEventListener('keydown',e=>{
     if(!me) return;
     if(document.getElementById('modalRoot').innerHTML) return;   // modals handle their own keys
+    // Review is a deliberate move, so it gets its own key. Enter on the Sell
+    // screen only ever ADDS - overloading it meant a second Enter silently
+    // jumped to Review mid-order.
+    if(e.key==='F2'||(e.key==='Enter'&&(e.ctrlKey||e.metaKey))){
+      if(view==='sell'&&cart.length){e.preventDefault();go('checkout');}
+      return;}
     if(e.ctrlKey||e.metaKey||e.altKey) return;
     if(e.key==='Escape'&&view==='sell'&&sellQuery){e.preventDefault();sellQuery='';render();return;}
     if(typingIn(e.target)) return;
@@ -1845,7 +1855,6 @@ async function signOut(){await sb.auth.signOut();me=null;document.getElementById
       const el=document.getElementById('sellSearch');
       if(el){el.focus();try{el.setSelectionRange(el.value.length,el.value.length);}catch(x){}}
       return;}
-    if(e.key==='Enter'&&view==='sell'&&cart.length){e.preventDefault();go('checkout');}
   });
 })();
 
