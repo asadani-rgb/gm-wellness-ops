@@ -358,8 +358,13 @@ function openAddModal(pid,editUid){
     root.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="Add ${esc(p.name)}">
       <div class="modal-head"><h3>${line?'Edit — ':''}${esc(p.name)}</h3><button class="icon-btn" id="mx">${I.close}</button></div>
       <div class="modal-body">
-        <div class="addrow"><span>Quantity</span><div class="qty"><button class="icon-btn" id="qminus" aria-label="Decrease">${I.minus}</button><b id="qval">${qty}</b><button class="icon-btn" id="qplus" aria-label="Increase" ${qty>=cap?'disabled':''}>${I.plus}</button></div></div>
-        <div class="help" style="margin-top:6px">${cap<=0?'<span style="color:var(--crit)">Nothing left in stock for this drink.</span>':`Stock allows <b>${cap}</b> more right now${cartCount()?' with the rest of this order accounted for':''}.`}</div>
+        <div class="addrow"><span>Quantity</span><div class="qty">
+          <button class="icon-btn" id="qminus" aria-label="Decrease" ${qty<=1?'disabled':''}>${I.minus}</button>
+          <input id="qval" class="qty-input" type="text" inputmode="numeric" autocomplete="off"
+            aria-label="Quantity" value="${qty}" ${cap<=0?'disabled':''}>
+          <button class="icon-btn" id="qplus" aria-label="Increase" ${qty>=cap?'disabled':''}>${I.plus}</button>
+        </div></div>
+        <div class="help" style="margin-top:6px">${cap<=0?'<span style="color:var(--crit)">Nothing left in stock for this drink.</span>':`Tap the number to type a quantity — stock allows <b>${cap}</b> more right now${cartCount()?', with the rest of this order accounted for':''}.`}</div>
         ${exs.length?`<div class="lab" style="margin-top:16px">Extras</div>${exs.map(e=>`<label class="exrow"><span><input type="checkbox" data-ex="${e.id}" ${sel[e.id]?'checked':''}> ${esc(e.name)}</span><span class="expr ${e.price>0?'':'free'}">${e.price>0?('+ '+money(e.price)):'Free'}</span></label>`).join('')}`:'<div class="help" style="margin-top:14px">No extras configured for this drink.</div>'}
       </div>
       <div class="modal-foot"><span class="kbd-hint"><b>↵</b> ${line?'save':'add'} · <b>esc</b> close · type a number for qty</span>
@@ -368,8 +373,31 @@ function openAddModal(pid,editUid){
     const close=()=>root.innerHTML='';
     document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
     document.getElementById('mx').onclick=close; document.getElementById('mcancel').onclick=close;
-    document.getElementById('qminus').onclick=()=>{if(qty>1){qty--;draw();}};
-    document.getElementById('qplus').onclick=()=>{if(qty<cap){qty++;draw();}else toast(`Only ${cap} left in stock`,I.issues);};
+    const qbox=document.getElementById('qval');
+    // Patch in place rather than redrawing - draw() rebuilds the modal and would
+    // destroy this input mid-keystroke, the same trap as the discount box.
+    const syncQty=(writeBox)=>{
+      if(writeBox&&qbox) qbox.value=qty;
+      const tot=document.getElementById('mlt'); if(tot) tot.textContent=money(lineTot());
+      const minus=document.getElementById('qminus'), plus=document.getElementById('qplus');
+      if(minus) minus.disabled=qty<=1;
+      if(plus) plus.disabled=qty>=cap;
+    };
+    document.getElementById('qminus').onclick=()=>{if(qty>1){qty--;syncQty(true);}};
+    document.getElementById('qplus').onclick=()=>{if(qty<cap){qty++;syncQty(true);}else toast(`Only ${cap} left in stock`,I.issues);};
+    if(qbox){
+      // tapping the box selects what's there, so typing 50 gives 50 and not 150
+      qbox.onfocus=()=>{try{qbox.select();}catch(e){}};
+      qbox.oninput=()=>{
+        const clean=qbox.value.replace(/[^0-9]/g,'').replace(/^0+(?=\d)/,'');
+        if(clean!==qbox.value) qbox.value=clean;
+        if(clean===''){syncQty(false);return;}          // let them clear it mid-edit
+        let n=parseInt(clean,10);
+        if(n>cap){n=cap;qbox.value=String(cap);toast(`Only ${cap} left in stock`,I.issues);}
+        qty=Math.max(1,n); syncQty(false);
+      };
+      qbox.onblur=()=>{if(!qbox.value||parseInt(qbox.value,10)<1){qty=Math.min(1,cap)||1;}syncQty(true);};
+    }
     root.querySelectorAll('[data-ex]').forEach(cb=>cb.onchange=()=>{sel[cb.dataset.ex]=cb.checked;draw();});
     const commit=()=>{
       if(cap<=0){toast('Not enough stock for this drink',I.issues);return;}
@@ -387,11 +415,16 @@ function openAddModal(pid,editUid){
       if(/^[0-9]$/.test(e.key)){
         if(e.target&&/INPUT|TEXTAREA|SELECT/.test(e.target.tagName))return;
         e.preventDefault();
-        typedQty=(typedQty+e.key).slice(-3);
+        typedQty=(typedQty+e.key).slice(-4);
         let n=parseInt(typedQty,10);
         if(n>cap){n=cap;typedQty=String(cap);toast(`Only ${cap} left in stock`,I.issues);}
-        if(n>0){qty=n;draw();
-          const el=document.getElementById('qval'); if(el) el.classList.add('flash');}
+        if(n>0){qty=n;
+          const el=document.getElementById('qval');
+          if(el){el.value=qty;el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');}
+          const tot=document.getElementById('mlt'); if(tot) tot.textContent=money(lineTot());
+          const minus=document.getElementById('qminus'), plus=document.getElementById('qplus');
+          if(minus) minus.disabled=qty<=1;
+          if(plus) plus.disabled=qty>=cap;}
         return;}
       if(e.key==='Backspace'&&typedQty){e.preventDefault();typedQty='';}
     };
