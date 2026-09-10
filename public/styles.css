@@ -420,6 +420,21 @@
     .ord-actions{grid-template-columns:1fr 1fr;gap:5px}
     .ord-actions .btn-mini:first-child{grid-column:1 / -1}
   }
+  /* --- low-stock card tints ---
+     color-mix against --surface, so these stay pastel in light mode and go
+     muted rather than glowing on the dark theme. */
+  .prod.low-warn{background:color-mix(in srgb,var(--warn) 11%,var(--surface));
+    border-color:color-mix(in srgb,var(--warn) 34%,var(--line))}
+  .prod.low-crit{background:color-mix(in srgb,var(--crit) 11%,var(--surface));
+    border-color:color-mix(in srgb,var(--crit) 36%,var(--line))}
+  .prod.low-crit .cups .num{color:var(--crit)}
+  .prod.low-warn .cups .num{color:var(--warn)}
+  .cups .incart{color:var(--ink-faint);font-size:12px;font-weight:600}
+  .prod.out .cups .num{color:var(--ink-faint)}
+  @supports not (background:color-mix(in srgb,red 10%,white)){
+    .prod.low-warn{background:#fdf4e8;border-color:#f0d9b4}
+    .prod.low-crit{background:#fdf0f3;border-color:#f2c9d4}
+  }
   /* --- keyboard, search, parking, editable cart lines --- */
   .kbd-hint{font-size:11px;color:var(--ink-faint);margin-right:auto}
   .kbd-hint b{display:inline-block;min-width:16px;padding:1px 4px;border:1px solid var(--line);border-bottom-width:2px;

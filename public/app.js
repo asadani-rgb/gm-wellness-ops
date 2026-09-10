@@ -185,7 +185,35 @@ const coffeesLeft=x=>Math.floor(x.stock/perServing(x));
 const ratio=x=>Math.max(0,Math.min(1,x.stock/x.par));
 const statusOf=r=>r<0.15?'crit':r<0.4?'warn':'good';
 const statusLabel=s=>s==='crit'?'Critical':s==='warn'?'Low':'Healthy';
-function cupCapacity(p){let min=Infinity,lim=null;p.recipe.forEach(([iid,q])=>{const x=ing(iid);if(!x)return;const c=Math.floor(x.stock/q);if(c<min){min=c;lim=iid;}});return{cups:min===Infinity?0:min,limitId:lim};}
+// What the current cart has already claimed, per ingredient - drinks AND extras,
+// because extras draw stock too. Pass excludeUid when re-editing a line so its
+// own usage doesn't count against itself.
+function cartUsage(excludeUid){
+  const use={};
+  cart.forEach(l=>{
+    if(excludeUid&&l.uid===excludeUid) return;
+    const p=DB.products.find(x=>x.id===l.pid);
+    if(p) p.recipe.forEach(([iid,q])=>{use[iid]=(use[iid]||0)+q*l.qty;});
+    (l.extras||[]).forEach(e=>{const ex=DB.extras.find(x=>x.id===e.id);
+      if(ex) use[ex.ingredientId]=(use[ex.ingredientId]||0)+ex.qty*l.qty;});
+  });
+  return use;
+}
+const freeStock=(x,use)=>Math.max(0,x.stock-((use&&use[x.id])||0));
+// cups still makeable AFTER the cart. Called with no `use` elsewhere (Admin),
+// where it keeps the old plain-stock meaning.
+function cupCapacity(p,use){let min=Infinity,lim=null;p.recipe.forEach(([iid,q])=>{const x=ing(iid);if(!x||!(q>0))return;const c=Math.floor(freeStock(x,use)/q);if(c<min){min=c;lim=iid;}});return{cups:min===Infinity?0:min,limitId:lim};}
+// Most cups of p we could still add, counting the extras chosen for that line.
+function maxQtyFor(p,chosen,excludeUid){
+  const use=cartUsage(excludeUid), per={};
+  p.recipe.forEach(([iid,q])=>{per[iid]=(per[iid]||0)+q;});
+  (chosen||[]).forEach(e=>{const ex=DB.extras.find(x=>x.id===(e&&e.id||e));
+    if(ex) per[ex.ingredientId]=(per[ex.ingredientId]||0)+ex.qty;});
+  let min=Infinity;
+  Object.keys(per).forEach(iid=>{const x=ing(iid),q=per[iid];if(!x||!(q>0))return;
+    min=Math.min(min,Math.floor(freeStock(x,use)/q));});
+  return min===Infinity?999:Math.max(0,min);
+}
 const fmtNum=n=>n.toLocaleString(curLocale());
 function timeAgo(ts){const s=(Date.now()-ts)/1000;if(s<3600)return Math.max(1,Math.round(s/60))+'m ago';if(s<86400)return Math.round(s/3600)+'h ago';return Math.round(s/86400)+'d ago';}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
@@ -261,8 +289,12 @@ function sellMatches(){
 }
 function quickAdd(p){
   if(!p) return;
-  const {cups}=cupCapacity(p);
-  if(cups<=0){toast(`${p.name} is out of stock`,I.issues);return;}
+  const {cups}=cupCapacity(p,cartUsage());
+  if(cups<=0){
+    const already=cart.filter(l=>l.pid===p.id).reduce((a,l)=>a+l.qty,0);
+    toast(already?`No more ${p.name} — all remaining stock is already in this order`
+                 :`${p.name} is out of stock`,I.issues);
+    return;}
   const same=cart.find(l=>l.pid===p.id&&l.extras.length===0);
   if(same){same.qty++;} else {
     cart.push({uid:'c'+Date.now()+Math.random().toString(36).slice(2,6),pid:p.id,name:p.name,price:p.price,qty:1,extras:[]});
@@ -276,19 +308,22 @@ function viewSell(){
   const lowItems=DB.ingredients.filter(x=>statusOf(ratio(x))!=='good').sort((a,b)=>ratio(a)-ratio(b));
   const lowCount=lowItems.length; const lowNames=lowItems.map(x=>x.name);
   const list=sellMatches();
+  const use=cartUsage();
   const cards=list.map((p,idx)=>{
-    const {cups,limitId}=cupCapacity(p); const lim=ing(limitId);
-    const rq=limitId?p.recipe.find(r=>r[0]===limitId)[1]:1;
-    const target=lim?Math.max(cups,Math.floor(lim.par/rq)):cups;
-    const pct=target?Math.round(cups/target*100):0;
-    const s=cups<8?'crit':cups<20?'warn':(pct<40?'warn':'good');
+    const {cups,limitId}=cupCapacity(p,use); const lim=ing(limitId);
+    const inCart=cart.filter(l=>l.pid===p.id).reduce((a,l)=>a+l.qty,0);
+    // Judged against the Target level set per supply, so a fast mover and a slow
+    // one aren't measured on the same absolute scale.
+    const r=lim?Math.max(0,Math.min(1,freeStock(lim,use)/(lim.par||1))):1;
+    const pct=Math.round(r*100);
+    const s=statusOf(r);
     const disabled=cups<=0; const nEx=extrasFor(p.id).length;
-    return `<div class="card prod ${disabled?'out':''} ${(sellQuery&&idx===0)?'top-match':''}">
+    return `<div class="card prod ${disabled?'out':''} ${s==='good'?'':'low-'+s} ${(sellQuery&&idx===0)?'top-match':''}">
       <div class="p-top"><h3>${esc(p.name)}</h3><span class="price">${money(p.price)}</span></div>
-      <div class="cups"><b class="num">${cups}</b> cups can be made</div>
+      <div class="cups"><b class="num">${cups}</b> cup${cups===1?'':'s'} left${inCart?` <span class="incart">· ${inCart} in this order</span>`:''}</div>
       <div class="bar ${s}"><i style="width:${Math.max(disabled?0:4,pct)}%"></i></div>
-      <div class="limit">${disabled?'Out of stock':(lim?('Limited by '+esc(lim.name)):(nEx?`${nEx} extra${nEx>1?'s':''} available`:''))}</div>
-      <div class="sell-row"><button class="btn-sell" data-add="${p.id}" ${disabled?'disabled':''}>${I.plus} Add to order</button></div>
+      <div class="limit">${disabled?(inCart?'All remaining stock is in this order':'Out of stock'):(lim?('Limited by '+esc(lim.name)):(nEx?`${nEx} extra${nEx>1?'s':''} available`:''))}</div>
+      <div class="sell-row"><button class="btn-sell" data-add="${p.id}" ${disabled?'disabled':''}>${I.plus} ${disabled?'None left':'Add to order'}</button></div>
     </div>`;
   }).join('');
   return `<div class="page-head">
@@ -314,13 +349,17 @@ function openAddModal(pid,editUid){
   const exs=extrasFor(pid); let qty=line?line.qty:1; const sel={};
   if(line) line.extras.forEach(e=>{sel[e.id]=true;});
   let typedQty='';   // digits typed in a row set the quantity outright
+  const capNow=()=>maxQtyFor(p,exs.filter(e=>sel[e.id]),editUid);
   const root=document.getElementById('modalRoot');
   const lineTot=()=>{let ex=0;exs.forEach(e=>{if(sel[e.id])ex+=e.price;});return (p.price+ex)*qty;};
   function draw(){
+    const cap=capNow();
+    if(qty>cap) qty=Math.max(cap>0?1:0,cap);
     root.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-label="Add ${esc(p.name)}">
       <div class="modal-head"><h3>${line?'Edit — ':''}${esc(p.name)}</h3><button class="icon-btn" id="mx">${I.close}</button></div>
       <div class="modal-body">
-        <div class="addrow"><span>Quantity</span><div class="qty"><button class="icon-btn" id="qminus" aria-label="Decrease">${I.minus}</button><b id="qval">${qty}</b><button class="icon-btn" id="qplus" aria-label="Increase">${I.plus}</button></div></div>
+        <div class="addrow"><span>Quantity</span><div class="qty"><button class="icon-btn" id="qminus" aria-label="Decrease">${I.minus}</button><b id="qval">${qty}</b><button class="icon-btn" id="qplus" aria-label="Increase" ${qty>=cap?'disabled':''}>${I.plus}</button></div></div>
+        <div class="help" style="margin-top:6px">${cap<=0?'<span style="color:var(--crit)">Nothing left in stock for this drink.</span>':`Stock allows <b>${cap}</b> more right now${cartCount()?' with the rest of this order accounted for':''}.`}</div>
         ${exs.length?`<div class="lab" style="margin-top:16px">Extras</div>${exs.map(e=>`<label class="exrow"><span><input type="checkbox" data-ex="${e.id}" ${sel[e.id]?'checked':''}> ${esc(e.name)}</span><span class="expr ${e.price>0?'':'free'}">${e.price>0?('+ '+money(e.price)):'Free'}</span></label>`).join('')}`:'<div class="help" style="margin-top:14px">No extras configured for this drink.</div>'}
       </div>
       <div class="modal-foot"><span class="kbd-hint"><b>↵</b> ${line?'save':'add'} · <b>esc</b> close · type a number for qty</span>
@@ -330,9 +369,11 @@ function openAddModal(pid,editUid){
     document.getElementById('mbg').onclick=e=>{if(e.target.id==='mbg')close();};
     document.getElementById('mx').onclick=close; document.getElementById('mcancel').onclick=close;
     document.getElementById('qminus').onclick=()=>{if(qty>1){qty--;draw();}};
-    document.getElementById('qplus').onclick=()=>{qty++;draw();};
-    root.querySelectorAll('[data-ex]').forEach(cb=>cb.onchange=()=>{sel[cb.dataset.ex]=cb.checked;document.getElementById('mlt').textContent=money(lineTot());});
+    document.getElementById('qplus').onclick=()=>{if(qty<cap){qty++;draw();}else toast(`Only ${cap} left in stock`,I.issues);};
+    root.querySelectorAll('[data-ex]').forEach(cb=>cb.onchange=()=>{sel[cb.dataset.ex]=cb.checked;draw();});
     const commit=()=>{
+      if(cap<=0){toast('Not enough stock for this drink',I.issues);return;}
+      if(qty>cap){toast(`Only ${cap} left in stock`,I.issues);return;}
       const chosen=exs.filter(e=>sel[e.id]).map(e=>({id:e.id,name:e.name,price:e.price}));
       if(line){ line.qty=qty; line.extras=chosen; close(); render(); toast(`Updated ${p.name}`,I.check); }
       else { cart.push({uid:'c'+Date.now()+Math.random().toString(36).slice(2,6),pid:p.id,name:p.name,price:p.price,qty,extras:chosen});
@@ -347,7 +388,9 @@ function openAddModal(pid,editUid){
         if(e.target&&/INPUT|TEXTAREA|SELECT/.test(e.target.tagName))return;
         e.preventDefault();
         typedQty=(typedQty+e.key).slice(-3);
-        const n=parseInt(typedQty,10); if(n>0){qty=n;draw();
+        let n=parseInt(typedQty,10);
+        if(n>cap){n=cap;typedQty=String(cap);toast(`Only ${cap} left in stock`,I.issues);}
+        if(n>0){qty=n;draw();
           const el=document.getElementById('qval'); if(el) el.classList.add('flash');}
         return;}
       if(e.key==='Backspace'&&typedQty){e.preventDefault();typedQty='';}
@@ -1812,7 +1855,7 @@ async function afterLogin(){
   const {data:prof}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
   me={id:user.id,email:user.email,name:(prof&&prof.name&&String(prof.name).trim())||user.email||'User',role:(prof&&prof.role)||'staff',branchId:(prof&&prof.branch_id)||null};
   document.getElementById('login').style.display='none';document.getElementById('app').classList.add('on');
-  await loadAll();setUserChrome();setShopName();view='sell';renderNav();render();
+  await loadAll();setUserChrome();setShopName();view='sell';renderNav();render();startStockRefresh();
 }
 async function signOut(){await sb.auth.signOut();me=null;document.getElementById('app').classList.remove('on');document.getElementById('login').style.display='grid';document.getElementById('pass').value='';document.getElementById('loginErr').textContent='';}
 
@@ -1832,6 +1875,31 @@ async function signOut(){await sb.auth.signOut();me=null;document.getElementById
   document.addEventListener('keydown',e=>{if(e.key==='Escape'){const r=document.getElementById('modalRoot');if(r.innerHTML)r.innerHTML='';}});
   sb.auth.getSession().then(({data})=>{if(data&&data.session)afterLogin();});
 })();
+
+/* ==================== BACKGROUND STOCK REFRESH ==================== */
+// Another till at this branch can sell while this screen sits open. Re-read
+// stock quietly; never while a modal is open or the barista is mid-search,
+// because render() would pull the DOM out from under them.
+let stockTimer=null;
+const STOCK_POLL_MS=30000;
+function startStockRefresh(){
+  if(stockTimer) return;
+  stockTimer=setInterval(async()=>{
+    try{
+      if(!me||!activeBranch||document.hidden) return;
+      if(view!=='sell'&&view!=='stock') return;
+      if(document.getElementById('modalRoot').innerHTML) return;
+      const a=document.activeElement;
+      if(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName)) return;
+      const {data,error}=await sb.from('ingredients').select('id,stock').eq('branch_id',activeBranch);
+      if(error||!data) return;
+      let changed=false;
+      data.forEach(r=>{const x=ing(r.id);
+        if(x&&Number(x.stock)!==Number(r.stock)){x.stock=Number(r.stock);changed=true;}});
+      if(changed) render();
+    }catch(e){}
+  },STOCK_POLL_MS);
+}
 
 /* ============================ GLOBAL KEYBOARD ============================ */
 // Never auto-focus the search box: on a tablet that pops the on-screen

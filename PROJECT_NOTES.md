@@ -92,6 +92,24 @@ supplies, and stock starts at zero — after which the two drift apart freely.
 - **Admin:** Supplies, Coffees (recipes), Extras, Team (add/reset/remove via Edge Function), Settings
   (shop + GST/invoice + backup export/import).
 
+## Live stock on the Sell screen
+The card count is **what you can still sell**, not raw stock: `cartUsage()` totals what the cart
+already claims (drink recipes **and** extras) and `cupCapacity(p, use)` works from `stock - claimed`.
+- Cards read "**78 cups left · 12 in this order**".
+- **Shared ingredients move together.** Milk limits Cappuccino, Latte, Flat White and Mocha, so
+  adding one Latte lowers the count on all four. That is the real constraint, not a bug.
+- **Over-adding is blocked at the till:** Add disables at zero, the modal's + stops at
+  `maxQtyFor()` (which also counts the extras chosen on that line, and excludes the line being
+  edited from its own cap), typed quantities clamp, and Enter refuses. `record_order` would reject
+  it anyway - blocking early just moves the bad news to before the customer is waiting.
+- **Low-stock tints** are judged as a **percentage of that supply's Target level**, not absolute
+  cups - so a 2,485-cup item and a 20-cup item aren't measured on the same scale. Under 40% of
+  target washes the card pastel orange, under 15% pastel pink (`.prod.low-warn` / `.low-crit`,
+  `color-mix` against `--surface` so dark mode stays muted rather than glowing).
+- **Background refresh** every 30s while on Sell or Stock, so a second till selling doesn't leave
+  this screen stale. It skips while a modal is open, while any field has focus, or when the tab is
+  hidden - otherwise `render()` would yank the DOM out from under whoever is mid-order.
+
 ## Till speed: keyboard
 - Just **start typing** on the Sell screen and the search wakes up — no click, no focus needed.
   **Enter** adds the top match straight to the cart (stacking an existing plain line rather than
