@@ -586,7 +586,7 @@ function viewCheckout(){
 
   const amO=amendingFrom?DB.orders.find(x=>x.id===amendingFrom):null;
   return `<div class="page-head"><div><h1>Review order</h1><div class="ph-sub">Confirm with the customer, then submit.</div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${cart.length?`<button class="btn-ghost" id="parkBtn2">${I.pause} Park</button>`:''}<button class="btn-ghost" data-goto="sell">${I.plus} Add more</button></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${cart.length?`<button class="btn-ghost" id="clearBtn" style="color:var(--crit)">${I.trash} Clear order</button><button class="btn-ghost" id="parkBtn2">${I.pause} Park</button>`:''}<button class="btn-ghost" data-goto="sell">${I.plus} Add more</button></div></div>
     ${amO?`<div class="alert-danger" style="margin:0 0 14px">Correcting <b>${esc(amO.invoiceNo||'')}</b> — that bill is now cancelled. Submitting issues a new invoice number linked to it.</div>`:''}
     <div class="grid two-col">
       <div class="card card-pad"><div class="section-title">Items · ${cartCount()}</div><div style="margin-top:8px">${rows}</div>${discBlock}</div>
@@ -763,6 +763,42 @@ function downloadReceiptPDF(o,fmt){
     line('Thank you & see you again!',{c:true,s:9});
     doc.save((o.invoiceNo||'receipt').replace(/[\\/]/g,'-')+'.pdf');
   }catch(e){window.print();}
+}
+
+// Nothing was ever taken from stock by an unsubmitted cart - the counts on the
+// Sell screen are a projection of `stock - cartUsage()`, so emptying the cart
+// restores them on its own. The only thing that needs explaining is the amend
+// case, where the ORIGINAL invoice has already been cancelled for real.
+function clearOrderModal(){
+  if(!cart.length) return;
+  const n=cartCount(), val=cartTotal();
+  const amO=amendingFrom?DB.orders.find(x=>x.id===amendingFrom):null;
+  openModal({title:amO?'Abandon this correction?':'Clear this order?',danger:true,
+    confirmLabel:amO?'Abandon it':'Clear the order',
+    body: amO
+      ? `<div class="alert-danger" style="margin-top:0">
+           <b>${esc(amO.invoiceNo||'')} stays cancelled and nothing replaces it.</b>
+           Its stock was already put back when you started the correction, so stock stays correct -
+           but the customer is left without a bill.
+         </div>
+         <p style="margin:12px 0 0;color:var(--ink-soft);font-size:14.5px">
+           If you opened the correction by mistake, press <b>Cancel</b> below and then
+           <b>Submit</b> without changing anything - that re-issues the same order under a new
+           invoice number, linked to ${esc(amO.invoiceNo||'')}.
+         </p>`
+      : `<p style="margin:0;color:var(--ink-soft);font-size:14.5px">
+           Removes all <b>${n}</b> item${n===1?'':'s'} (${money(val)}) from this order.
+           Nothing was billed and no stock moved, so the counts on the Sell screen go straight back up.
+         </p>
+         <p style="margin:10px 0 0;color:var(--ink-soft);font-size:13px">
+           If the customer might come back, <b>Park</b> it instead of clearing.
+         </p>`,
+    onConfirm:()=>{
+      const wasAmend=!!amO, inv=amO?amO.invoiceNo:'';
+      cart=[]; resetCheckoutState(); amendingFrom=null;
+      view='sell'; renderNav(); render();
+      toast(wasAmend?`Correction abandoned — ${inv} remains cancelled`:'Order cleared',I.trash);
+    }});
 }
 
 /* ---------- AMEND AN ISSUED BILL ---------- */
@@ -1364,6 +1400,7 @@ function wire(){
   // park / recall
   const pkB=document.getElementById('parkBtn');   if(pkB) pkB.onclick=parkOrderModal;
   const pkB2=document.getElementById('parkBtn2'); if(pkB2) pkB2.onclick=parkOrderModal;
+  const clr=document.getElementById('clearBtn');  if(clr) clr.onclick=clearOrderModal;
   const pkL=document.getElementById('parkedBtn'); if(pkL) pkL.onclick=parkedListModal;
   // type-to-add search
   const ss=document.getElementById('sellSearch');
